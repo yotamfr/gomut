@@ -321,7 +321,7 @@ def pairwise_distances(x, y=None):
     if y is None:
         dist = dist - torch.diag(dist.diag())
     dist = torch.clamp(dist, 0.0, np.inf)
-    return torch.sqrt(dist)
+    return dist
 
 
 def pairwise_distances_cpu(x, y=None):
@@ -346,7 +346,7 @@ def pairwise_distances_cpu(x, y=None):
     if y is None:
         dist = dist - np.diag(np.diag(dist))
     dist = np.clip(dist, 0.0, np.inf)
-    return np.sqrt(dist)
+    return dist
 
 
 if __name__ == "__main__":
