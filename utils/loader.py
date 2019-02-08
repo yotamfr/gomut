@@ -1,33 +1,22 @@
 import h5py
-import random
 from prody import *
-from torch_utils import *
-import pandas as pd
-from tqdm import tqdm
+from .torch_utils import *
 from ast import literal_eval as make_tuple
 from collections import OrderedDict
 from build_datasets import FASTA
-from constants import *
+from .constants import *
+from .profile import *
+from .data import *
 
 np.seterr('raise')
 confProDy(verbosity='none')
 random.seed(101)
 
-REPO_PATH = os.path.join('data', 'pdbs_gz')
-PAIRS_PATH = os.path.join('data', 'pairs.csv')
-FPAIRS_PATH = os.path.join('data', 'failed_pairs.csv')
-
-PDB_FPAIRS = pd.read_csv(FPAIRS_PATH).values.tolist()
-PDB_FPAIRS_SET = set([(p[0], p[1]) for p in PDB_FPAIRS])
-PDB_PAIRS = pd.read_csv(PAIRS_PATH).sort_values(by=['length'])
-PDB_PAIRS = PDB_PAIRS[PDB_PAIRS.num_mutated == 1].values
-PDB_PAIRS = PDB_PAIRS[~np.asarray([tuple(p) in PDB_FPAIRS_SET for p in PDB_PAIRS[:, :2]])]
-
-PRECOMP = True
-IDX = h5py.File('data/h5/idx.h5', 'a') if PRECOMP else None
-COORDS = h5py.File('data/h5/coords.h5', 'a') if PRECOMP else None
-RESNAMES = h5py.File('data/h5/resnames.h5', 'a') if PRECOMP else None
-ATOMNAMES = h5py.File('data/h5/atomnames.h5', 'a') if PRECOMP else None
+PERM = 'r'
+IDX = h5py.File('data/h5/idx.h5', PERM)
+COORDS = h5py.File('data/h5/coords.h5', PERM)
+RESNAMES = h5py.File('data/h5/resnames.h5', PERM)
+ATOMNAMES = h5py.File('data/h5/atomnames.h5', PERM)
 
 _, SEQS = FASTA('data/pdb_seqres.txt')
 
@@ -163,10 +152,11 @@ def store_residues(st1, pdb1, chain_id1):
     data = [[i, j, r.getResname(), a.getName(), a.getCoords()]
             for i, r in enumerate(residues) for j, a in enumerate(r)]
     idx, _, resnames, atomnames, coords = zip(*data)
-    IDX.create_dataset(tostr(pdb1, chain_id1), data=np.array(idx).astype(np.long))
-    COORDS.create_dataset(tostr(pdb1, chain_id1), data=np.array(coords).astype(np.float))
-    RESNAMES.create_dataset(tostr(pdb1, chain_id1), data=np.array(resnames).astype('|S9'))
-    ATOMNAMES.create_dataset(tostr(pdb1, chain_id1), data=np.array(atomnames).astype('|S9'))
+    if PERM == 'a':
+        IDX.create_dataset(tostr(pdb1, chain_id1), data=np.array(idx).astype(np.long))
+        COORDS.create_dataset(tostr(pdb1, chain_id1), data=np.array(coords).astype(np.float))
+        RESNAMES.create_dataset(tostr(pdb1, chain_id1), data=np.array(resnames).astype('|S9'))
+        ATOMNAMES.create_dataset(tostr(pdb1, chain_id1), data=np.array(atomnames).astype('|S9'))
     return residues
 
 
@@ -182,7 +172,7 @@ def load_residues(pdb1, chain_id1):
 
 
 def load_or_parse_residues(pdb1, chain_id1):
-    if PRECOMP and tostr(pdb1, chain_id1) in COORDS:
+    if tostr(pdb1, chain_id1) in COORDS:
         residues = load_residues(pdb1, chain_id1)
         return residues
     src_path = os.path.join(REPO_PATH, '%s.pdb.gz' % pdb1)
@@ -217,10 +207,7 @@ def handle_failure(pdb1, pdb2, reason):
         PDB_FPAIRS_SET.add((pdb1, pdb2))
 
 
-def pairs_loader(list_of_pairs, n_iter, shuffle=False):
-
-    if shuffle:
-        random.shuffle(list_of_pairs)
+def pairs_loader(list_of_pairs, n_iter):
 
     i_iter = 0
     N = len(list_of_pairs)
@@ -293,6 +280,8 @@ def pairs_loader(list_of_pairs, n_iter, shuffle=False):
         assert iseq1.shape[0] == pmat1.shape[0]
         assert iseq2.shape[0] == pmat2.shape[0]
 
+        prof1, prof2 = get_profile(pdb_id1), get_profile(pdb_id2)
+
         yield iseq1, iseq2, pmat1, pmat2, diff, pdb_id1, pdb_id2, seq1, seq2
         i_iter += 1
 
@@ -347,11 +336,3 @@ def pairwise_distances_cpu(x, y=None):
         dist = dist - np.diag(np.diag(dist))
     dist = np.clip(dist, 0.0, np.inf)
     return dist
-
-
-if __name__ == "__main__":
-    pbar = tqdm(total=10000, desc='pairs loaded')
-    for s1, s2, m1, m2, idx in batch_generator(pairs_loader(PDB_PAIRS, 10000), prepare_torch_batch):
-        assert m1.shape == m2.shape
-        pbar.update(len(idx))
-    pbar.close()

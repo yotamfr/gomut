@@ -21,5 +21,3 @@ def get_cdhit_clusters(fasta_filename, parse=lambda seq: seq.split('>')[1].split
     print("Detected %s clusters (>%s%% similarity) groups..." % (len(cluster_dic), 30))
 
     return cluster_dic, reverse_dic
-
-
