@@ -94,7 +94,7 @@ def predict(model, m1, m2, s1, s2, p1, p2, idx):
 def train(model, loader, optimizer, n_iter):
     model.train()
     err = 0.0
-    i = 0.0
+    i = 0
     pbar = tqdm(total=len(loader), desc='pairs loaded')
     for i, (s1, s2, p1, p2, m1, m2, idx, pdb1, pdb2, *_) in enumerate(batch_generator(loader, prepare_torch_batch)):
         optimizer.zero_grad()
@@ -110,13 +110,8 @@ def train(model, loader, optimizer, n_iter):
 
         writer.add_scalars('M1/Loss', {"train": e}, n_iter)
 
-        try:
-            with autograd.detect_anomaly():
-                loss.backward()
-        except RuntimeError:
-            print(pdb1)
-            print(pdb2)
-            continue
+        with autograd.detect_anomaly():
+            loss.backward()
 
         if n_iter % UPLOAD_IMAGE_EVERY == 0:
             delta1 = ddm.unsqueeze(1).data.cpu().numpy()
@@ -140,7 +135,7 @@ def train(model, loader, optimizer, n_iter):
 def evaluate(model, loader, n_iter):
     model.eval()
     err = 0.0
-    i = 0.0
+    i = 0
     pbar = tqdm(total=len(loader), desc='pairs loaded')
     for i, (s1, s2, p1, p2, m1, m2, idx, pdb1, pdb2, *_) in enumerate(batch_generator(loader, prepare_torch_batch)):
 
