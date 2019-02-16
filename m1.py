@@ -52,8 +52,8 @@ class M1(nn.Module):
     def __init__(self):
         super(M1, self).__init__()
 
-        self.unet1d_1 = UNet1d(n_channels=61, n_classes=8, inner_channels=32)
-        self.unet2d_1 = UNet2d(n_channels=1, n_classes=8, inner_channels=16)
+        self.unet1d_1 = UNet1d(n_channels=61, n_classes=8, inner_channels=16)
+        self.unet2d_1 = UNet2d(n_channels=1, n_classes=8, inner_channels=8)
         self.unet2d_2 = UNet2d(n_channels=24, n_classes=1, inner_channels=16)
         self.outer_product = OuterProduct()
 
