@@ -62,9 +62,12 @@ def model_summary(model):
         print(idx, '->', m)
 
 
-def save_checkpoint(state, loss, prefix, ckptpath):
-    filename_late = os.path.join(ckptpath, "%s_%.5f.tar" % (prefix, loss))
-    torch.save(state, filename_late)
+def save_checkpoint(state, prefix, ckptpath, is_best=False):
+    if is_best:
+        filename = os.path.join(ckptpath, "%s_best.tar" % (prefix,))
+        torch.save(state, filename)
+    filename = os.path.join(ckptpath, "%s_latest.tar" % (prefix,))
+    torch.save(state, filename)
 
 
 def load_checkpoint(net, checkpoint):

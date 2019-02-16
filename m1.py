@@ -1,6 +1,7 @@
 from tqdm import tqdm
 from torch import optim
 from torch import autograd
+from tempfile import gettempdir
 
 from utils.loader import *
 from unet import *
@@ -133,7 +134,6 @@ def train(model, loader, optimizer, n_iter):
         n_iter += 1
 
     pbar.close()
-
     return n_iter
 
 
@@ -156,11 +156,24 @@ def evaluate(model, loader, n_iter):
         pbar.update(len(idx))
 
     writer.add_scalars('M1/Loss', {"valid": err / (i + 1.)}, n_iter)
-
     pbar.close()
+    return err
+
+
+def add_arguments(parser):
+    parser.add_argument('-r', '--resume', default='', type=str, metavar='PATH',
+                        help='path to latest checkpoint (default: none)')
+    parser.add_argument('-n', "--num_epochs", type=int, default=200,
+                        help="How many epochs to train the model?")
+    parser.add_argument("-o", "--out_dir", type=str, required=False,
+                        default=gettempdir(), help="Specify the output directory.")
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    add_arguments(parser)
+    args = parser.parse_args()
 
     net = M1()
     net.to(device)
@@ -169,20 +182,39 @@ def main():
 
     n_iter = 1
     init_epoch = 0
-    num_epochs = 20
+    num_epochs = args.num_epochs
     train_size = 100000
     test_size = 10000
+
+    if args.resume:
+        if os.path.isfile(args.resume):
+            print("=> loading checkpoint '%s'" % args.resume)
+            checkpoint = torch.load(args.resume)
+            init_epoch = checkpoint['epoch']
+            net.load_state_dict(checkpoint['net'])
+            opt.load_state_dict(checkpoint['opt'])
+        else:
+            print("=> no checkpoint found at '%s'" % args.resume)
 
     trainset = TRAIN_SET
     testset = VALID_SET
     loader_train = Loader(trainset, train_size)
     loader_test = Loader(testset, test_size)
-
+    best_yet = np.inf
     for epoch in range(init_epoch, num_epochs):
         n_iter = train(net, loader_train, opt, n_iter)
-        evaluate(net, loader_test, n_iter)
+        loss = evaluate(net, loader_test, n_iter)
         loader_train.reset()
         loader_test.reset()
+
+        save_checkpoint({
+            'lr': opt.lr,
+            'epoch': epoch,
+            'net': net.state_dict(),
+            'opt': opt.state_dict()
+        }, "m1", args.out_dir, loss < best_yet)
+
+        best_yet = min(best_yet, loss)
 
 
 if __name__ == "__main__":
