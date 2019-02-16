@@ -13,8 +13,7 @@ PROFS = h5py.File('data/h5/profiles.h5', PERM)
 
 def get_profile(pdb_id, msa_path=MSAS_PATH):
     if pdb_id in PROFS:
-        profile = PROFS[pdb_id][:]
-        num_seqs, _ = profile.shape
+        profile = torch.tensor(PROFS[pdb_id][:], dtype=torch.float, device=device)
     else:
         _, fas = FASTA(osp.join(msa_path, '%s.a3m' % pdb_id))
         length, num_seqs = len(fas[pdb_id].seq), len(fas)
@@ -23,11 +22,6 @@ def get_profile(pdb_id, msa_path=MSAS_PATH):
         profile = torch.zeros(20, length, device=device, dtype=torch.float)
         for i, aa in enumerate(amino_acids):
             profile[i, :] = torch.tensor((msa == aa).astype(np.float), device=device, dtype=torch.float).sum(0)
+        profile.div_(num_seqs)
         PROFS.create_dataset(pdb_id, data=profile.data.cpu().numpy().astype(np.float))
-    profile /= num_seqs
-    return profile
-
-
-if __name__ == '__main__':
-    prof = get_profile('6fve_A')
-    print(prof.shape)
+    return profile.transpose(0, 1)

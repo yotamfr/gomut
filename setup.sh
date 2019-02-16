@@ -7,10 +7,14 @@ conda install -p gomut pip -c anaconda
 conda install -p gomut pytorch-cpu torchvision-cpu -c pytorch
 
 source activate gomut/
+
 pip install --upgrade pip
+
 pip install numpy
 pip install pandas
 pip install scipy
+pip install tensorflow
+pip install tensorboard
 pip install tensoarboardX
 pip install prody
 pip install biopython

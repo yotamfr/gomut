@@ -8,4 +8,5 @@ ssh -o 'GatewayPorts yes' -L ${LOCAL_PORT}:${REMOTE_HOST}:${REMOTE_PORT} yotamfr
 
 
 # sudo bash openport.sh trachel-srv2.cs.haifa.ac.il 8200 8888
+# sudo bash openport.sh trachel-srv2.cs.haifa.ac.il 16006 6006
 # C%K9#bGx~ua
