@@ -8,7 +8,7 @@ from unet import *
 
 
 THR_DISTANCE = 1.0
-UPLOAD_IMAGE_EVERY = 2000
+UPLOAD_IMAGE_EVERY = 1000
 LR = 0.01
 
 
@@ -86,9 +86,11 @@ def normalize1d(v, batch_size):
     v.sub_(mu).div_(sigma)
 
 
-def get_loss(d_hat, d, lam=10.0):
+def get_loss(d_hat, d, lam=50.0):
     msk = (d != 0).float() * lam + (d == 0).float() * 1.0
-    return ((d_hat - d).abs() * msk).mean((1, 2)).mean()
+    l1 = ((d_hat - d).abs() * msk).sum((1, 2)).mean()
+    sym = (d_hat.transpose(1, 2) - d_hat).abs().sum((1, 2)).mean()
+    return l1 + sym
 
 
 def predict_2ways(model, m1, m2, s1, s2, b1, b2, p1, p2, idx):
@@ -102,6 +104,7 @@ def predict_2ways(model, m1, m2, s1, s2, b1, b2, p1, p2, idx):
     d1 = mask_distance_matrix(m1 - m2)
     d2 = mask_distance_matrix(m2 - m1)
     ddm = torch.cat([d1, d2], 0)
+    # ddm = torch.cat([m1 - m2, m2 - m1], 0)
     return ddm_hat, ddm
 
 
