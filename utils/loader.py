@@ -8,29 +8,35 @@ np.seterr('raise')
 confProDy(verbosity='none')
 random.seed(101)
 
-PERM = 'r'
+PERM = 'a'
 IDX = h5py.File('data/h5/idx.h5', PERM)
+BETAS = h5py.File('data/h5/betas.h5', PERM)
 COORDS = h5py.File('data/h5/coords.h5', PERM)
 RESNAMES = h5py.File('data/h5/resnames.h5', PERM)
 ATOMNAMES = h5py.File('data/h5/atomnames.h5', PERM)
 
 _, SEQS = FASTA('data/pdb_seqres.txt')
 
+MAX_ALLOWED_SHIFT = 10
 MAX_BATCH_SIZE = 4
 MAX_LENGTH = 500
 
 
 class Atom(object):
 
-    def __init__(self, name, coords):
-        self.coords = coords
+    def __init__(self, name, coords, beta):
         self.name = name.strip()
+        self.coords = coords
+        self.beta = beta
 
     def getName(self):
         return self.name
 
     def getCoords(self):
         return self.coords
+
+    def getBeta(self):
+        return self.beta
 
 
 class Residue(object):
@@ -48,8 +54,15 @@ class Residue(object):
     def getResname(self):
         return self.resname
 
+    def getBetas(self):
+        return [a.beta for a in self.atoms.values()]
+
     def __getitem__(self, item):
         return self.atoms.get(item, None)
+
+
+def to_betas(residues):
+    return torch.tensor([np.mean(res.getBetas()) for res in residues], dtype=torch.float32, device=device)
 
 
 def toX(residues):
@@ -113,31 +126,34 @@ def convert_to_indices_sequence(seq):
 
 
 def prepare_torch_batch(data):
-    iseq1, iseq2, prof1, prof2, pmat1, pmat2, mutix, pdb1, pdb2, *_ = zip(*data)
+    iseq1, iseq2, beta1, beta2, prof1, prof2, pmat1, pmat2, mutix, pdb1, pdb2, *_ = zip(*data)
     iseq1 = torch.stack(iseq1, 0)
     iseq2 = torch.stack(iseq2, 0)
+    beta1 = torch.stack(beta1, 0)
+    beta2 = torch.stack(beta2, 0)
     prof1 = torch.stack(prof1, 0)
     prof2 = torch.stack(prof2, 0)
     pmat1 = torch.stack(pmat1, 0)
     pmat2 = torch.stack(pmat2, 0)
     mutix = torch.stack(mutix, 0)
-    return iseq1, iseq2, prof1, prof2, pmat1, pmat2, mutix, pdb1, pdb2
+    return iseq1, iseq2, beta1, beta2, prof1, prof2, pmat1, pmat2, mutix, pdb1, pdb2
 
 
 def batch_generator(loader, prepare):
     batch = []
     curr_length = None
     for inp in loader:
-        x, *_ = inp
+        meta, data = inp
+        x = data[0]
         if curr_length is None:
             curr_length = len(x)
         if (len(x) != curr_length) or (len(batch) == MAX_BATCH_SIZE):
             if batch:
                 yield prepare(batch)
             curr_length = len(x)
-            batch = [inp]
+            batch = [data + meta]
         else:
-            batch.append(inp)
+            batch.append(data + meta)
     if batch:
         yield prepare(batch)
 
@@ -148,11 +164,12 @@ def tostr(pdb1, chain_id1):
 
 def store_residues(st1, pdb1, chain_id1):
     residues = list(st1.select('protein')[chain_id1])
-    data = [[i, j, r.getResname(), a.getName(), a.getCoords()]
+    data = [[i, j, r.getResname(), a.getName(), a.getCoords(), a.getBeta()]
             for i, r in enumerate(residues) for j, a in enumerate(r)]
-    idx, _, resnames, atomnames, coords = zip(*data)
+    idx, _, resnames, atomnames, coords, betas = zip(*data)
     if PERM == 'a':
         IDX.create_dataset(tostr(pdb1, chain_id1), data=np.array(idx).astype(np.long))
+        BETAS.create_dataset(tostr(pdb1, chain_id1), data=np.array(betas).astype(np.float))
         COORDS.create_dataset(tostr(pdb1, chain_id1), data=np.array(coords).astype(np.float))
         RESNAMES.create_dataset(tostr(pdb1, chain_id1), data=np.array(resnames).astype('|S9'))
         ATOMNAMES.create_dataset(tostr(pdb1, chain_id1), data=np.array(atomnames).astype('|S9'))
@@ -161,12 +178,13 @@ def store_residues(st1, pdb1, chain_id1):
 
 def load_residues(pdb1, chain_id1):
     idx = IDX[tostr(pdb1, chain_id1)][:]
+    betas = BETAS[tostr(pdb1, chain_id1)][:]
     coords = COORDS[tostr(pdb1, chain_id1)][:]
     resnames = RESNAMES[tostr(pdb1, chain_id1)][:].astype('U13')
     atomnames = ATOMNAMES[tostr(pdb1, chain_id1)][:].astype('U13')
     residues = {i: Residue(name) for i, name in zip(idx, resnames)}
-    for i, name, xyz in zip(idx, atomnames, coords):
-        residues[i].atoms[name] = Atom(name, xyz)
+    for i, name, xyz, beta in zip(idx, atomnames, coords, betas):
+        residues[i].atoms[name] = Atom(name, xyz, beta)
     return [residues[i] for i in set(idx)]
 
 
@@ -188,7 +206,7 @@ def load_or_parse_residues(pdb1, chain_id1):
 
 def find_maximal_matching_shift(seq1, seq2, k=1):
     size = min(len(seq1), len(seq2))
-    min_size = size - 10
+    min_size = size - MAX_ALLOWED_SHIFT
     a, b = 0, 0
     str1 = seq1[a: a + size]
     str2 = seq2[b: b + size]
@@ -207,70 +225,6 @@ def handle_failure(pdb1, pdb2, reason):
     if (pdb1, pdb2) not in PDB_FPAIRS_SET:
         PDB_FPAIRS.append([pdb1, pdb2, reason])
         PDB_FPAIRS_SET.add((pdb1, pdb2))
-
-
-def pairs_loader(list_of_pairs, n_iter):
-
-    i_iter = 0
-    N = len(list_of_pairs)
-    i_pdb = np.random.randint(0, len(list_of_pairs))
-    while i_iter < n_iter:
-        pdb_id1, pdb_id2, mutated, _, length = list_of_pairs[i_pdb]
-        mutated = make_tuple(mutated)
-        pdb1, chain_id1 = pdb_id1.split('_')
-        pdb2, chain_id2 = pdb_id2.split('_')
-        i_pdb = (i_pdb + 1) % N
-
-        residues1 = load_or_parse_residues(pdb1, chain_id1)
-        if residues1 is None:
-            handle_failure(pdb_id1, pdb_id2, 'pdb \'%s\' failed to parse' % pdb1)
-            continue
-        residues2 = load_or_parse_residues(pdb2, chain_id2)
-        if residues2 is None:
-            handle_failure(pdb_id1, pdb_id2, 'pdb \'%s\' failed to parse' % pdb2)
-            continue
-
-        X1, idx1 = zip(*[(x, i) for i, x in enumerate(toX(residues1)) if isinstance(x, np.ndarray)])
-        X2, idx2 = zip(*[(x, i) for i, x in enumerate(toX(residues2)) if isinstance(x, np.ndarray)])
-
-        if not (set(mutated).issubset(set(idx1)) and set(mutated).issubset(set(idx2))):
-            handle_failure(pdb_id1, pdb_id2, 'residue(s): %s are missing' % mutated)
-            continue
-
-        try:
-            seq1 = np.asarray([AA_dict[res.getResname()] for res in residues1])[np.asarray(idx1)]
-            seq2 = np.asarray([AA_dict[res.getResname()] for res in residues2])[np.asarray(idx2)]
-        except KeyError as e:
-            handle_failure(pdb_id1, pdb_id2, 'KeyError: %s' % str(e))
-            continue
-
-        a, b, size, diff = find_maximal_matching_shift(seq1, seq2, k=len(mutated))
-        seq1, X1 = seq1[a: a + size], np.asarray(X1)[a: a + size, :]
-        seq2, X2 = seq2[b: b + size], np.asarray(X2)[b: b + size, :]
-
-        if len(diff) != len(mutated):
-            handle_failure(pdb_id1, pdb_id2, 'num_mutated: %d (expected %d)' % (len(diff), len(mutated)))
-            continue
-
-        if SEQS[pdb_id1][mutated[0]] != seq1[diff[0]]:
-            continue    # TODO: decide what to do
-        if SEQS[pdb_id2][mutated[0]] != seq2[diff[0]]:
-            continue    # TODO: decide what to do
-
-        pmat1 = get_distance_matrix(X1)
-        pmat2 = get_distance_matrix(X2)
-        iseq1 = convert_to_indices_sequence(seq1)
-        iseq2 = convert_to_indices_sequence(seq2)
-
-        assert iseq1.shape == iseq2.shape
-        assert pmat1.shape == pmat2.shape
-        assert iseq1.shape[0] == pmat1.shape[0]
-        assert iseq2.shape[0] == pmat2.shape[0]
-
-        yield iseq1, iseq2, pmat1, pmat2, diff, pdb_id1, pdb_id2, seq1, seq2
-        i_iter += 1
-
-    pd.DataFrame(PDB_FPAIRS, columns=['pdb1', 'pdb2', 'reason']).to_csv(FPAIRS_PATH, index=False)
 
 
 def pairwise_distances(x, y=None):
@@ -323,21 +277,34 @@ def pairwise_distances(x, y=None):
 #     return dist
 
 
-def align_sequence_and_profile(seq1, pseq1, prof1):
+def to_seq(residues):
+    try:
+        return ''.join([AA_dict[res.getResname()] for res in residues])
+    except AttributeError as e:
+        raise e
+
+
+def align_sequence_and_profile(residues, pseq, prof):
     '''
-    :param seq1: seq (numpy array) as parsed from pdb atoms
-    :param pseq1: seq (string) as parsed from fasta file
-    :param prof1: profile (probability matrix)
+    :param residues: seq (numpy array) as parsed from pdb atoms
+    :param pseq: seq (string) as parsed from fasta file
+    :param prof: profile (probability matrix)
     :return: prof1 & seq1 sharing the longest common subsequence
     '''
-    str2 = pseq1.seq
-    str1 = ''.join(seq1)
+    str1, str2 = to_seq(residues), pseq.seq
     match = SequenceMatcher(None, str1, str2)
-    m = match.find_longest_match(0, len(str1), 0, len(str2))
+    try:
+        m = match.find_longest_match(0, len(str1), 0, len(str2))
+    except TypeError as e:
+        raise e
     if m.size != 0:
-        seq1 = seq1[m.a: m.a + m.size]
-        prof1 = prof1[m.b: m.b + m.size, :]
-    return m, seq1, prof1
+        residues = residues[m.a: m.a + m.size]
+        prof = prof[m.b: m.b + m.size, :]
+    return m, residues, prof
+
+
+def is_okay(res):
+    return (isinstance(get_center(res), np.ndarray)) and (res.getResname() in AA_dict)
 
 
 class Loader(object):
@@ -354,13 +321,13 @@ class Loader(object):
 
     def next(self):
         pdb_id1, pdb_id2, mutated, _, length = self.list_of_pairs[self.i_pdb]
+
         if length > MAX_LENGTH:
             return None
 
         mutated = make_tuple(mutated)
         pdb1, chain_id1 = pdb_id1.split('_')
         pdb2, chain_id2 = pdb_id2.split('_')
-        self.i_pdb = (self.i_pdb + 1) % self.N
 
         residues1 = load_or_parse_residues(pdb1, chain_id1)
         if residues1 is None:
@@ -369,17 +336,8 @@ class Loader(object):
         if residues2 is None:
             return handle_failure(pdb_id1, pdb_id2, 'pdb \'%s\' failed to parse' % pdb2)
 
-        X1, idx1 = zip(*[(x, i) for i, x in enumerate(toX(residues1)) if isinstance(x, np.ndarray)])
-        X2, idx2 = zip(*[(x, i) for i, x in enumerate(toX(residues2)) if isinstance(x, np.ndarray)])
-
-        if not (set(mutated).issubset(set(idx1)) and set(mutated).issubset(set(idx2))):
-            return handle_failure(pdb_id1, pdb_id2, 'residue(s): %s are missing' % mutated)
-
-        try:
-            seq1 = np.asarray([AA_dict[res.getResname()] for res in residues1])[np.asarray(idx1)]
-            seq2 = np.asarray([AA_dict[res.getResname()] for res in residues2])[np.asarray(idx2)]
-        except KeyError as e:
-            return handle_failure(pdb_id1, pdb_id2, 'KeyError: %s' % str(e))
+        residues1, idx1 = zip(*[(res, i) for i, res in enumerate(residues1) if is_okay(res)])
+        residues2, idx2 = zip(*[(res, i) for i, res in enumerate(residues2) if is_okay(res)])
 
         try:
             prof1 = get_profile(pdb_id1)
@@ -390,29 +348,32 @@ class Loader(object):
         except FileNotFoundError:
             return handle_failure(pdb_id1, pdb_id2, 'could not find profile for: \'%s\'' % pdb_id2)
 
-        pseq1, pseq2 = SEQS[pdb_id1], SEQS[pdb_id2]
-
-        match1, seq1, prof1 = align_sequence_and_profile(seq1, pseq1, prof1)
+        match1, residues1, prof1 = align_sequence_and_profile(residues1, SEQS[pdb_id1], prof1)
         if match1.size <= 1:
             return handle_failure(pdb_id1, pdb_id2, 'could not match seq to profile for: \'%s\'' % pdb_id1)
-        assert len(seq1) == len(prof1)
+        assert len(residues1) == len(prof1)
 
-        match2, seq2, prof2 = align_sequence_and_profile(seq2, pseq2, prof2)
+        match2, residues2, prof2 = align_sequence_and_profile(residues2, SEQS[pdb_id2], prof2)
         if match2.size <= 1:
             return handle_failure(pdb_id1, pdb_id2, 'could not match seq to profile for: \'%s\'' % pdb_id2)
-        assert len(seq2) == len(prof2)
+        assert len(residues2) == len(prof2)
 
-        a, b, size, diff = find_maximal_matching_shift(seq1, seq2, k=len(mutated))
-        if size == 0: return    # TODO: handle error...
-        seq1, X1, prof1 = seq1[a: a + size], np.asarray(X1)[a: a + size, :], prof1[a: a + size, :]
-        seq2, X2, prof2 = seq2[b: b + size], np.asarray(X2)[b: b + size, :], prof2[b: b + size, :]
+        a, b, size, diff = find_maximal_matching_shift(to_seq(residues1), to_seq(residues2), k=len(mutated))
+        if size <= MAX_ALLOWED_SHIFT:
+            return    # TODO: handle error...
         if len(diff) != len(mutated):
             return handle_failure(pdb_id1, pdb_id2, 'num_mutated: %d (expected %d)' % (len(diff), len(mutated)))
+        residues1, prof1 = residues1[a: a + size], prof1[a: a + size, :]
+        residues2, prof2 = residues2[b: b + size], prof2[a: a + size, :]
 
-        pmat1 = get_distance_matrix(X1)
-        pmat2 = get_distance_matrix(X2)
+        pmat1 = get_distance_matrix(toX(residues1))
+        pmat2 = get_distance_matrix(toX(residues2))
+        seq1 = to_seq(residues1)
+        seq2 = to_seq(residues2)
         iseq1 = convert_to_indices_sequence(seq1)
         iseq2 = convert_to_indices_sequence(seq2)
+        betas1 = to_betas(residues1)
+        betas2 = to_betas(residues2)
         mutix = torch.tensor(diff, device=device)
 
         assert iseq1.shape == iseq2.shape
@@ -422,13 +383,16 @@ class Loader(object):
         assert iseq1.shape[0] == prof1.shape[0]
         assert iseq2.shape[0] == prof2.shape[0]
 
-        return iseq1, iseq2, prof1, prof2, pmat1.sqrt(), pmat2.sqrt(), mutix, pdb_id1, pdb_id2, seq1, seq2
+        data = iseq1, iseq2, betas1, betas2, prof1, prof2, pmat1.sqrt(), pmat2.sqrt(), mutix
+        meta = pdb_id1, pdb_id2, seq1, seq2
+        return meta, data
 
     def __next__(self):
         if self.i_iter < self.n_iter:
-            ret = self.next()
+            ret = None
             while ret is None:
                 ret = self.next()
+                self.i_pdb = (self.i_pdb + 1) % self.N
             self.i_iter += 1
             return ret
         else:
@@ -440,3 +404,66 @@ class Loader(object):
 
     def __len__(self):
         return self.n_iter
+
+
+def pairs_loader(list_of_pairs, n_iter):
+    i_iter = 0
+    N = len(list_of_pairs)
+    i_pdb = np.random.randint(0, len(list_of_pairs))
+    while i_iter < n_iter:
+        pdb_id1, pdb_id2, mutated, _, length = list_of_pairs[i_pdb]
+        mutated = make_tuple(mutated)
+        pdb1, chain_id1 = pdb_id1.split('_')
+        pdb2, chain_id2 = pdb_id2.split('_')
+        i_pdb = (i_pdb + 1) % N
+
+        residues1 = load_or_parse_residues(pdb1, chain_id1)
+        if residues1 is None:
+            handle_failure(pdb_id1, pdb_id2, 'pdb \'%s\' failed to parse' % pdb1)
+            continue
+        residues2 = load_or_parse_residues(pdb2, chain_id2)
+        if residues2 is None:
+            handle_failure(pdb_id1, pdb_id2, 'pdb \'%s\' failed to parse' % pdb2)
+            continue
+
+        X1, idx1 = zip(*[(x, i) for i, x in enumerate(toX(residues1)) if isinstance(x, np.ndarray)])
+        X2, idx2 = zip(*[(x, i) for i, x in enumerate(toX(residues2)) if isinstance(x, np.ndarray)])
+
+        if not (set(mutated).issubset(set(idx1)) and set(mutated).issubset(set(idx2))):
+            handle_failure(pdb_id1, pdb_id2, 'residue(s): %s are missing' % str(mutated))
+            continue
+
+        try:
+            seq1 = np.asarray([AA_dict[res.getResname()] for res in residues1])[np.asarray(idx1)]
+            seq2 = np.asarray([AA_dict[res.getResname()] for res in residues2])[np.asarray(idx2)]
+        except KeyError as e:
+            handle_failure(pdb_id1, pdb_id2, 'KeyError: %s' % str(e))
+            continue
+
+        a, b, size, diff = find_maximal_matching_shift(seq1, seq2, k=len(mutated))
+        seq1, X1 = seq1[a: a + size], np.asarray(X1)[a: a + size, :]
+        seq2, X2 = seq2[b: b + size], np.asarray(X2)[b: b + size, :]
+
+        if len(diff) != len(mutated):
+            handle_failure(pdb_id1, pdb_id2, 'num_mutated: %d (expected %d)' % (len(diff), len(mutated)))
+            continue
+
+        if SEQS[pdb_id1][mutated[0]] != seq1[diff[0]]:
+            continue    # TODO: decide what to do
+        if SEQS[pdb_id2][mutated[0]] != seq2[diff[0]]:
+            continue    # TODO: decide what to do
+
+        pmat1 = get_distance_matrix(X1)
+        pmat2 = get_distance_matrix(X2)
+        iseq1 = convert_to_indices_sequence(seq1)
+        iseq2 = convert_to_indices_sequence(seq2)
+
+        assert iseq1.shape == iseq2.shape
+        assert pmat1.shape == pmat2.shape
+        assert iseq1.shape[0] == pmat1.shape[0]
+        assert iseq2.shape[0] == pmat2.shape[0]
+
+        yield iseq1, iseq2, pmat1, pmat2, diff, pdb_id1, pdb_id2, seq1, seq2
+        i_iter += 1
+
+    pd.DataFrame(PDB_FPAIRS, columns=['pdb1', 'pdb2', 'reason']).to_csv(FPAIRS_PATH, index=False)

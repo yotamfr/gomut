@@ -52,21 +52,21 @@ class M1(nn.Module):
     def __init__(self):
         super(M1, self).__init__()
 
-        self.unet1d_1 = UNet1d(n_channels=61, n_classes=8, inner_channels=16)
+        self.unet1d_1 = UNet1d(n_channels=62, n_classes=8, inner_channels=16)
         self.unet2d_1 = UNet2d(n_channels=1, n_classes=8, inner_channels=8)
         self.unet2d_2 = UNet2d(n_channels=24, n_classes=1, inner_channels=16)
         self.outer_product = OuterProduct()
 
-    def forward(self, seq1, seq2, prof, dmat, mut_idx):
+    def forward(self, seq1, seq2, beta, prof, dmat, mut_idx):
         batch_sz = dmat.size(0)
-        mu = dmat.mean((1, 2)).view(batch_sz, 1, 1)
-        sigma = dmat.view(batch_sz, -1).std(1).view(batch_sz, 1, 1)
-        dmat.add_(-mu).div_(sigma)
+        normalize1d(beta, batch_sz)
+        normalize2d(dmat, batch_sz)
+        beta[torch.isnan(beta)] = 0.0
         seq1_onehot = to_onehot(seq1)
         seq2_onehot = to_onehot(seq2)
         msk = torch.zeros(prof.size(0), prof.size(1), 1, dtype=torch.float, device=device)
         msk[:, mut_idx, :] = 1
-        si = torch.cat([prof, seq1_onehot, seq2_onehot, msk], 2)
+        si = torch.cat([seq1_onehot, seq2_onehot, prof, beta.unsqueeze(2), msk], 2)
         dm = self.unet2d_1(dmat.unsqueeze(1))
         si = self.unet1d_1(si.transpose(1, 2))
         op = self.outer_product(si, si)
@@ -74,17 +74,31 @@ class M1(nn.Module):
         return out.squeeze(1)
 
 
-def get_loss(d_hat, d):
-    return (d_hat - d).abs().mean((1, 2)).mean()
+def normalize2d(v, batch_size):
+    mu = v.view(batch_size, -1).mean(1).view(batch_size, 1, 1)
+    sigma = v.view(batch_size, -1).std(1).view(batch_size, 1, 1)
+    v.sub_(mu).div_(sigma)
 
 
-def predict(model, m1, m2, s1, s2, p1, p2, idx):
+def normalize1d(v, batch_size):
+    mu = v.view(batch_size, -1).mean(1).view(batch_size, 1)
+    sigma = v.view(batch_size, -1).std(1).view(batch_size, 1)
+    v.sub_(mu).div_(sigma)
+
+
+def get_loss(d_hat, d, lam=10.0):
+    msk = (d != 0).float() * lam + (d == 0).float() * 1.0
+    return ((d_hat - d).abs() * msk).mean((1, 2)).mean()
+
+
+def predict_2ways(model, m1, m2, s1, s2, b1, b2, p1, p2, idx):
     seq1 = torch.cat([s1, s2], 0)
     seq2 = torch.cat([s2, s1], 0)
+    beta = torch.cat([b1, b2], 0)
     prof = torch.cat([p1, p2], 0)
     dm = torch.cat([m1, m2], 0)
     idx = torch.cat([idx, idx], 0)
-    ddm_hat = model(seq1, seq2, prof, dm, idx)
+    ddm_hat = model(seq1, seq2, beta, prof, dm, idx)
     d1 = mask_distance_matrix(m1 - m2)
     d2 = mask_distance_matrix(m2 - m1)
     ddm = torch.cat([d1, d2], 0)
@@ -96,22 +110,25 @@ def train(model, loader, optimizer, n_iter):
     err = 0.0
     i = 0
     pbar = tqdm(total=len(loader), desc='pairs loaded')
-    for i, (s1, s2, p1, p2, m1, m2, idx, pdb1, pdb2, *_) in enumerate(batch_generator(loader, prepare_torch_batch)):
+    for i, (s1, s2, b1, b2, p1, p2, m1, m2, idx, pdb1, pdb2, *_) in enumerate(batch_generator(loader, prepare_torch_batch)):
         optimizer.zero_grad()
 
         assert s1.shape == s2.shape
         assert m1.shape == m2.shape
         assert p1.shape == p2.shape
 
-        ddm_hat, ddm = predict(model, m1, m2, s1, s2, p1, p2, idx)
+        ddm_hat, ddm = predict_2ways(model, m1, m2, s1, s2, b1, b2, p1, p2, idx)
         loss = get_loss(ddm_hat, ddm)
         err += loss.item()
         e = err / (i + 1.)
 
         writer.add_scalars('M1/Loss', {"train": e}, n_iter)
 
-        with autograd.detect_anomaly():
-            loss.backward()
+        try:
+            with autograd.detect_anomaly():
+                loss.backward()
+        except RuntimeError as e:
+            raise e
 
         if n_iter % UPLOAD_IMAGE_EVERY == 0:
             delta1 = ddm.unsqueeze(1).data.cpu().numpy()
@@ -137,13 +154,13 @@ def evaluate(model, loader, n_iter):
     err = 0.0
     i = 0
     pbar = tqdm(total=len(loader), desc='pairs loaded')
-    for i, (s1, s2, p1, p2, m1, m2, idx, pdb1, pdb2, *_) in enumerate(batch_generator(loader, prepare_torch_batch)):
+    for i, (s1, s2, b1, b2, p1, p2, m1, m2, idx, pdb1, pdb2, *_) in enumerate(batch_generator(loader, prepare_torch_batch)):
 
         assert s1.shape == s2.shape
         assert m1.shape == m2.shape
         assert p1.shape == p2.shape
 
-        ddm_hat, ddm = predict(model, m1, m2, s1, s2, p1, p2, idx)
+        ddm_hat, ddm = predict_2ways(model, m1, m2, s1, s2, b1, b2, p1, p2, idx)
         loss = get_loss(ddm_hat, ddm)
         err += loss.item()
 
