@@ -27,3 +27,6 @@ amino_acids = list('ARNDCQEGHILKMFPSTWYV')
 
 
 BACKBONE = ['CA', 'C', 'N', 'O']
+
+
+SECONDARY_STRUCTURE = ['B', 'b', 'H', 'G', 'I', 'E', 'H', 'C']

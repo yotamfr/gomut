@@ -7,6 +7,8 @@ from tensorboardX import SummaryWriter
 import os
 import numpy as np
 
+from .cv_utils import *
+
 
 writer = SummaryWriter('runs')
 os.environ["CUDA_VISIBLE_DEVICES"] = '1'
@@ -153,3 +155,35 @@ def dfs_freeze(model):
         for param in child.parameters():
             param.requires_grad = False
         dfs_freeze(child)
+
+
+def bce_loss(true, logits, pos_weight=None):
+    """Computes the weighted binary cross-entropy loss.
+    Args:
+        true: a tensor of shape [B, 1, H, W].
+        logits: a tensor of shape [B, 1, H, W]. Corresponds to
+            the raw output or logits of the model.
+        pos_weight: a scalar representing the weight attributed
+            to the positive class. This is especially useful for
+            an imbalanced dataset.
+    Returns:
+        bce_loss: the weighted binary cross-entropy loss.
+    """
+    bce_loss = F.binary_cross_entropy_with_logits(
+        logits.float(),
+        true.float(),
+        pos_weight=torch.tensor([pos_weight], device=device),
+    )
+    return bce_loss
+
+
+def write_true_pred_pairs(modelname, n_iter, ids1, ids2, true, pred):
+    for id1, id2, m1, m2 in zip(ids1, ids2, true, pred):
+        writer.add_image('%s/%d_iterations/%s-%s_true' % (modelname, n_iter, id1, id2), to_colormap_image(m1), n_iter, dataformats='HWC')
+        writer.add_image('%s/%d_iterations/%s-%s_pred' % (modelname, n_iter, id1, id2), to_colormap_image(m2), n_iter, dataformats='HWC')
+
+
+def write_dist_mats_pairs(modelname, n_iter, ids1, ids2, mtst1, mts2):
+    for id1, id2, m1, m2 in zip(ids1, ids2, mtst1, mts2):
+        writer.add_image('%s/%d_iterations/%s-%s_m1' % (modelname, n_iter, id1, id2), to_colormap_image(m1), n_iter, dataformats='HWC')
+        writer.add_image('%s/%d_iterations/%s-%s_m2' % (modelname, n_iter, id1, id2), to_colormap_image(m2), n_iter, dataformats='HWC')

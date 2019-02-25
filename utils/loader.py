@@ -3,6 +3,10 @@ from ast import literal_eval as make_tuple
 from difflib import SequenceMatcher
 from .profile import *
 from .data import *
+from .stride import *
+
+import warnings
+warnings.simplefilter(action='ignore', category=FutureWarning)
 
 np.seterr('raise')
 confProDy(verbosity='none')
@@ -20,7 +24,7 @@ _, SEQs = FASTA('data/pdb_seqres.txt')
 MAX_ALLOWED_SHIFT = 10
 MAX_BATCH_SIZE = 4
 MAX_LENGTH = 700
-MIN_LENGTH = 26
+MIN_LENGTH = 32
 
 
 class Atom(object):
@@ -66,10 +70,6 @@ def to_betas(residues):
     return torch.tensor([np.mean(res.getBetas()) for res in residues], dtype=torch.float32, device=device)
 
 
-def toX(residues):
-    return [get_center(res) for res in residues]
-
-
 def filter_residues(residues):
     return [res for res in residues if res.getResname() != 'HOH']
 
@@ -81,25 +81,28 @@ def get_center(res):
         return None
 
 
-# def get_center(res):
-#     if res.getResname() == 'GLY':
-#         if res['CA']:
-#             return res['CA'].getCoords()
-#         else:
-#             return np.mean(res.getCoords(), axis=0)
-#     elif res['CB']:
-#         return res['CB'].getCoords()
-#     elif res.select('sc') and len(res.select('sc').getCoords()) != 0:
-#         return np.mean(res.select('sc').getCoords(), axis=0)
-#     elif res['CA']:
-#         return res['CA'].getCoords()
-#     else:
-#         return np.mean(res.getCoords(), axis=0)
+def get_center2(res):
+    if res.getResname() == 'GLY':
+        if res['CA']:
+            return res['CA'].getCoords()
+        else:
+            return np.mean(res.getCoords(), axis=0)
+    elif res['CB']:
+        return res['CB'].getCoords()
+    elif res.select('sc') and len(res.select('sc').getCoords()) != 0:
+        return np.mean(res.select('sc').getCoords(), axis=0)
+    elif res['CA']:
+        return res['CA'].getCoords()
+    else:
+        return np.mean(res.getCoords(), axis=0)
 
 
-def get_contact_map(X, thr=8.0):
-    pmat = pairwise_distances(torch.tensor(X, dtype=torch.float, device=device))
-    return (pmat < thr) & (pmat > 0.0)
+def toX(residues, get_center=get_center):
+    return [get_center(res) for res in residues]
+
+
+def get_contact_map(pmat, thr=8.0):
+    return pmat < thr
 
 
 def get_distance_matrix(X):
@@ -110,15 +113,10 @@ def convert_to_indices_sequence(seq):
     return torch.tensor([amino_acids.index(aa) for aa in seq], dtype=torch.long, device=device)
 
 
-# def get_contact_map_cpu(X, thr=8.0):
-#     pmat = pairwise_distances_cpu(np.asarray(X, dtype=np.float))
-#     return ((pmat < thr) & (pmat > 0.0)).astype(np.float)
-#
-#
 # def get_distance_matrix_cpu(X):
 #     return pairwise_distances_cpu(np.asarray(X, dtype=np.float))
-#
-#
+
+
 # def convert_to_indices_sequence_cpu(seq):
 #     return np.asarray([amino_acids.index(aa) for aa in seq], dtype=np.long)
 
@@ -133,7 +131,16 @@ def convert_to_indices_sequence(seq):
 #     return x1, x2, y1, y2, ix
 
 
-def prepare_torch_batch(data):
+def prepare_pdb_batch(data):
+    iseq1, beta1, prof1, pmat1, pdb1, *_ = zip(*data)
+    iseq1 = torch.stack(iseq1, 0)
+    beta1 = torch.stack(beta1, 0)
+    prof1 = torch.stack(prof1, 0)
+    pmat1 = torch.stack(pmat1, 0)
+    return iseq1, beta1, prof1, pmat1, pdb1
+
+
+def prepare_pairs_batch(data):
     iseq1, iseq2, beta1, beta2, prof1, prof2, pmat1, pmat2, mutix, pdb1, pdb2, *_ = zip(*data)
     iseq1 = torch.stack(iseq1, 0)
     iseq2 = torch.stack(iseq2, 0)
@@ -175,12 +182,13 @@ def store_residues(st1, pdb1, chain_id1):
     data = [[i, j, r.getResname(), a.getName(), a.getCoords(), a.getBeta()]
             for i, r in enumerate(residues) for j, a in enumerate(r)]
     idx, _, resnames, atomnames, coords, betas = zip(*data)
-    if PERM == 'a':
-        IDX.create_dataset(tostr(pdb1, chain_id1), data=np.array(idx).astype(np.long))
-        BETAS.create_dataset(tostr(pdb1, chain_id1), data=np.array(betas).astype(np.float))
-        COORDS.create_dataset(tostr(pdb1, chain_id1), data=np.array(coords).astype(np.float))
-        RESNAMES.create_dataset(tostr(pdb1, chain_id1), data=np.array(resnames).astype('|S9'))
-        ATOMNAMES.create_dataset(tostr(pdb1, chain_id1), data=np.array(atomnames).astype('|S9'))
+    key = tostr(pdb1, chain_id1)
+    if PERM != 'a': return residues
+    if key not in IDX: IDX.create_dataset(key, data=np.array(idx).astype(np.long))
+    if key not in BETAS: BETAS.create_dataset(key, data=np.array(betas).astype(np.float))
+    if key not in COORDS: COORDS.create_dataset(key, data=np.array(coords).astype(np.float))
+    if key not in RESNAMES: RESNAMES.create_dataset(key, data=np.array(resnames).astype('|S9'))
+    if key not in ATOMNAMES: ATOMNAMES.create_dataset(key, data=np.array(atomnames).astype('|S9'))
     return residues
 
 
@@ -229,10 +237,15 @@ def find_maximal_matching_shift(seq1, seq2, k=1, max_shift=MAX_ALLOWED_SHIFT):
     return a, b, size, diff
 
 
-def handle_failure(pdb1, pdb2, reason, failed_pairs_list=PDB_FPAIRS, failed_pairs_set=PDB_FPAIRS_SET):
-    if (pdb1, pdb2) not in failed_pairs_set:
-        failed_pairs_list.append([pdb1, pdb2, reason])
-        failed_pairs_set.add((pdb1, pdb2))
+def handle_failure(pdb1, reason, failed_list=FAILED_PDBs_LIST, failed_pdbs=FAILED_PDBs_SET):
+    if pdb1 in failed_pdbs:
+        return
+    failed_list.append([pdb1, reason])
+    failed_pdbs.add(pdb1)
+
+
+def save_failures(failed_path=FAILED_PDBs_PATH, failed_list=FAILED_PDBs_LIST):
+    pd.DataFrame(failed_list, columns=['pdb', 'reason']).to_csv(failed_path, index=False)
 
 
 def pairwise_distances(x, y=None):
@@ -332,21 +345,64 @@ def load_residues_and_profile(pdb1, chain_id1, sequence_dict=SEQs):
     return residues1, prof1
 
 
+def load_residues_stride_profile(pdb1, chain_id1, sequence_dict=SEQs):
+    pdb_id1 = tostr(pdb1, chain_id1)
+    residues1 = load_or_parse_residues(pdb1, chain_id1)
+    if residues1 is None:
+        raise ValueError('pdb \'%s\' failed to parse' % pdb1)
+    residues1 = list(filter(is_okay, residues1))
+
+    try:
+        prof1 = get_profile(pdb_id1)    # throws FileNotFoundError
+    except FileNotFoundError:
+        raise FileNotFoundError('could not find profile for: \'%s\'' % pdb_id1)
+    match1, residues1, prof1 = align_sequence_and_profile(residues1, sequence_dict[pdb_id1], prof1)
+    if match1.size <= 1:
+        raise ValueError('could not match seq to profile for: \'%s\'' % pdb_id1)
+    assert len(residues1) == len(prof1)
+    return residues1, prof1
+
+
 class Loader(object):
-    def __init__(self, list_of_pairs, n_iter, failed_pairs_path=PDB_FPAIRS):
-        self.list_of_pairs = list_of_pairs
+    def __init__(self, list_of_items, n_iter):
+        self.list_of_items = list_of_items
         self.n_iter = n_iter
-        # self.i_pdb = np.random.randint(0, len(list_of_pairs))
-        self.i_pdb = 63000
+        # self.i_pdb = np.random.randint(0, len(list_of_items))
+        self.i_pdb = 0
         self.i_iter = 0
-        self.N = len(list_of_pairs)
-        self.failed_pairs_path = failed_pairs_path
+        self.N = len(list_of_items)
 
     def reset(self):
         self.i_iter = 0
+        
+    def next(self):
+        raise NotImplementedError
+
+    def __next__(self):
+        if self.i_iter < self.n_iter:
+            ret = None
+            while ret is None:
+                ret = self.next()
+                self.i_pdb = (self.i_pdb + 1) % self.N
+            self.i_iter += 1
+            return ret
+        else:
+            save_failures()
+            raise StopIteration
+
+    def __iter__(self):
+        return self
+
+    def __len__(self):
+        return self.n_iter
+
+
+class PairsLoader(Loader):
+    def __init__(self, list_of_items, n_iter):
+        super(PairsLoader, self).__init__(list_of_items, n_iter)
 
     def next(self):
-        pdb_id1, pdb_id2, mutated, _, length = self.list_of_pairs[self.i_pdb]
+        pdb_id1, pdb_id2, mutated, _, length = self.list_of_items[self.i_pdb]
 
         if length > MAX_LENGTH:
             return None
@@ -354,11 +410,16 @@ class Loader(object):
         mutated = make_tuple(mutated)
         pdb1, chain_id1 = pdb_id1.split('_')
         pdb2, chain_id2 = pdb_id2.split('_')
+
         try:
             residues1, prof1 = load_residues_and_profile(pdb1, chain_id1)
+        except (FileNotFoundError, ValueError) as e:
+            return handle_failure(pdb_id1, str(e))
+
+        try:
             residues2, prof2 = load_residues_and_profile(pdb2, chain_id2)
         except (FileNotFoundError, ValueError) as e:
-            return handle_failure(pdb_id1, pdb_id2, str(e))
+            return handle_failure(pdb_id2, str(e))
 
         a, b, size, diff = find_maximal_matching_shift(to_seq(residues1), to_seq(residues2), k=len(mutated))
         if size < MIN_LENGTH:
@@ -389,24 +450,69 @@ class Loader(object):
         meta = pdb_id1, pdb_id2, seq1, seq2
         return meta, data
 
-    def __next__(self):
-        if self.i_iter < self.n_iter:
-            ret = None
-            while ret is None:
-                ret = self.next()
-                self.i_pdb = (self.i_pdb + 1) % self.N
-            self.i_iter += 1
-            return ret
-        else:
-            fpath = self.failed_pairs_path
-            pd.DataFrame(PDB_FPAIRS, columns=['pdb1', 'pdb2', 'reason']).to_csv(fpath, index=False)
-            raise StopIteration
 
-    def __iter__(self):
-        return self
+class PdbLoader(Loader):
+    def __init__(self, list_of_items, n_iter):
+        super(PdbLoader, self).__init__(list_of_items, n_iter)
 
-    def __len__(self):
-        return self.n_iter
+    def next(self):
+        pdb_id1, length = self.list_of_items[self.i_pdb]
+
+        pdb1, chain_id1 = pdb_id1.split('_')
+
+        try:
+            residues1, prof1 = load_residues_and_profile(pdb1, chain_id1)
+        except (FileNotFoundError, ValueError) as e:
+            return handle_failure(pdb_id1, str(e))
+
+        pmat1 = get_distance_matrix(toX(residues1, get_center=get_center2))
+        seq1 = to_seq(residues1)
+        iseq1 = convert_to_indices_sequence(seq1)
+        betas1 = to_betas(residues1)
+
+        if not (MIN_LENGTH <= len(residues1) <= MAX_LENGTH):
+            return None
+        if len(residues1) < length // 2:
+            return None
+
+        assert iseq1.shape[0] == pmat1.shape[0]
+        assert iseq1.shape[0] == prof1.shape[0]
+
+        data = iseq1, betas1, prof1, pmat1.sqrt()
+        meta = pdb_id1, seq1
+        return meta, data
+
+
+# class StrideLoader(Loader):
+#     def __init__(self, list_of_items, n_iter):
+#         super(StrideLoader, self).__init__(list_of_items, n_iter)
+#
+#     def next(self):
+#         pdb_id1, length = self.list_of_items[self.i_pdb]
+#
+#         pdb1, chain_id1 = pdb_id1.split('_')
+#
+#         try:
+#             residues1, prof1 = load_residues_and_profile(pdb1, chain_id1)
+#         except (FileNotFoundError, ValueError) as e:
+#             return handle_failure(pdb_id1, str(e))
+#
+#         pmat1 = get_distance_matrix(toX(residues1, get_center=get_center2))
+#         seq1 = to_seq(residues1)
+#         iseq1 = convert_to_indices_sequence(seq1)
+#         betas1 = to_betas(residues1)
+#
+#         if not (MIN_LENGTH <= len(residues1) <= MAX_LENGTH):
+#             return None
+#         if len(residues1) < length // 2:
+#             return None
+#
+#         assert iseq1.shape[0] == pmat1.shape[0]
+#         assert iseq1.shape[0] == prof1.shape[0]
+#
+#         data = iseq1, betas1, prof1, pmat1.sqrt()
+#         meta = pdb_id1, seq1
+#         return meta, data
 
 
 def pairs_loader(list_of_pairs, n_iter):
