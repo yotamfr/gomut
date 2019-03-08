@@ -14,7 +14,7 @@ UPLOAD_IMAGE_EVERY = 100
 LR = 0.0002
 
 bins = (4.5, 8.0, 15.0)
-# bins = (4.5, 8.0, 15.0)
+# bins = np.arange(4.5, 8.0, 15.5)
 weight_bins = (8.0, 15.0)
 weights = (20.5, 5.4, 1.0)
 
