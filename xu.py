@@ -14,6 +14,7 @@ UPLOAD_IMAGE_EVERY = 100
 LR = 0.0002
 
 bins = (4.5, 8.0, 15.0)
+# bins = (4.5, 8.0, 15.0)
 weight_bins = (8.0, 15.0)
 weights = (20.5, 5.4, 1.0)
 
@@ -98,8 +99,8 @@ def get_loss(cmap_hat, dmat, weights=weights):
     imj = imj.view(b*m*n)
     for i, w in enumerate(weights):
         msk = masks[:, i, :, :].contiguous().view(b*m*n)
-        losses += ce * msk * imj * w
-        losses += ce * msk * (1.0 - imj) * max(1.0, w / 2.0)
+        losses.add_(ce * msk * imj * w)
+        losses.add_(ce * msk * (1.0 - imj) * max(1.0, w / 2.0))
     return losses.mean()
 
 
