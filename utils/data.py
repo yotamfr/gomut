@@ -31,11 +31,11 @@ PDB_PAIRS = PDB_PAIRS[PDB_PAIRS.num_mutated == 1].values
 FAILED_PDBs_LIST = FAILED_PDBs.values.tolist()
 FAILED_PDBs_SET = set(FAILED_PDBs.pdb.values.tolist())
 
-PDB_PAIRS = PDB_PAIRS[~np.asarray([tuple(p) in set(FAILED_PDBs) for p in PDB_PAIRS[:, :2]])]
-
-random.shuffle(PDB_PAIRS)
-TRAIN_SET = sorted(PDB_PAIRS[:int(0.8*len(PDB_PAIRS))], key=lambda p: int(p[-1]))
-VALID_SET = sorted(PDB_PAIRS[int(0.9*len(PDB_PAIRS)):], key=lambda p: int(p[-1]))
-TEST_SET = sorted(PDB_PAIRS[int(0.8*len(PDB_PAIRS)):int(0.9*len(PDB_PAIRS))], key=lambda p: int(p[-1]))
-
-print('# TRAIN_SET: %d, # VALID_SET: %d, # TEST_SET: %d' % (len(TRAIN_SET), len(VALID_SET), len(TEST_SET)))
+# PDB_PAIRS = PDB_PAIRS[~np.asarray([tuple(p) in set(FAILED_PDBs) for p in PDB_PAIRS[:, :2]])]
+#
+# random.shuffle(PDB_PAIRS)
+# TRAIN_SET = sorted(PDB_PAIRS[:int(0.8*len(PDB_PAIRS))], key=lambda p: int(p[-1]))
+# VALID_SET = sorted(PDB_PAIRS[int(0.9*len(PDB_PAIRS)):], key=lambda p: int(p[-1]))
+# TEST_SET = sorted(PDB_PAIRS[int(0.8*len(PDB_PAIRS)):int(0.9*len(PDB_PAIRS))], key=lambda p: int(p[-1]))
+#
+# print('# TRAIN_SET: %d, # VALID_SET: %d, # TEST_SET: %d' % (len(TRAIN_SET), len(VALID_SET), len(TEST_SET)))

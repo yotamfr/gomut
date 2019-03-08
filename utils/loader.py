@@ -132,12 +132,13 @@ def convert_to_indices_sequence(seq):
 
 
 def prepare_pdb_batch(data):
-    iseq1, beta1, prof1, pmat1, pdb1, *_ = zip(*data)
+    iseq1, beta1, prof1, pmat1, dssp1, pdb1, *_ = zip(*data)
     iseq1 = torch.stack(iseq1, 0)
     beta1 = torch.stack(beta1, 0)
     prof1 = torch.stack(prof1, 0)
     pmat1 = torch.stack(pmat1, 0)
-    return iseq1, beta1, prof1, pmat1, pdb1
+    dssp1 = torch.stack(dssp1, 0)
+    return iseq1, beta1, prof1, pmat1, dssp1, pdb1
 
 
 def prepare_pairs_batch(data):
@@ -312,7 +313,7 @@ def align_sequence_and_profile(residues, pseq, prof):
     :param prof: profile (probability matrix)
     :return: prof1 & seq1 sharing the longest common subsequence
     '''
-    str1, str2 = to_seq(residues), pseq.seq
+    str1, str2 = to_seq(residues), pseq
     match = SequenceMatcher(None, str1, str2)
     try:
         m = match.find_longest_match(0, len(str1), 0, len(str2))
@@ -320,7 +321,7 @@ def align_sequence_and_profile(residues, pseq, prof):
         raise e
     if m.size != 0:
         residues = residues[m.a: m.a + m.size]
-        prof = prof[m.b: m.b + m.size, :]
+        prof = prof[m.b: m.b + m.size]
     return m, residues, prof
 
 
@@ -338,29 +339,21 @@ def load_residues_and_profile(pdb1, chain_id1, sequence_dict=SEQs):
         prof1 = get_profile(pdb_id1)    # throws FileNotFoundError
     except FileNotFoundError:
         raise FileNotFoundError('could not find profile for: \'%s\'' % pdb_id1)
-    match1, residues1, prof1 = align_sequence_and_profile(residues1, sequence_dict[pdb_id1], prof1)
+    match1, residues1, prof1 = align_sequence_and_profile(residues1, sequence_dict[pdb_id1].seq, prof1)
     if match1.size <= 1:
         raise ValueError('could not match seq to profile for: \'%s\'' % pdb_id1)
     assert len(residues1) == len(prof1)
     return residues1, prof1
 
 
-def load_residues_stride_profile(pdb1, chain_id1, sequence_dict=SEQs):
-    pdb_id1 = tostr(pdb1, chain_id1)
-    residues1 = load_or_parse_residues(pdb1, chain_id1)
-    if residues1 is None:
-        raise ValueError('pdb \'%s\' failed to parse' % pdb1)
-    residues1 = list(filter(is_okay, residues1))
-
-    try:
-        prof1 = get_profile(pdb_id1)    # throws FileNotFoundError
-    except FileNotFoundError:
-        raise FileNotFoundError('could not find profile for: \'%s\'' % pdb_id1)
-    match1, residues1, prof1 = align_sequence_and_profile(residues1, sequence_dict[pdb_id1], prof1)
-    if match1.size <= 1:
-        raise ValueError('could not match seq to profile for: \'%s\'' % pdb_id1)
-    assert len(residues1) == len(prof1)
-    return residues1, prof1
+def load_residues_profile_stride(pdb1, chain_id1):
+    residues1, prof1 = load_residues_and_profile(pdb1, chain_id1)
+    dssp1, seq1 = get_stride(pdb1, chain_id1)
+    m1, _, _ = align_sequence_and_profile(residues1, seq1, dssp1)
+    dssp1 = ([PAD_SS] * m1.a) + dssp1[m1.b:m1.b + m1.size] + ([PAD_SS] * (len(residues1) - m1.a - m1.size))
+    assert len(dssp1) == len(residues1)
+    assert len(prof1) == len(residues1)
+    return residues1, prof1, torch.tensor(dssp1, dtype=torch.long, device=device)
 
 
 class Loader(object):
@@ -414,11 +407,13 @@ class PairsLoader(Loader):
         try:
             residues1, prof1 = load_residues_and_profile(pdb1, chain_id1)
         except (FileNotFoundError, ValueError) as e:
+            print(tostr(pdb1, chain_id1))
             return handle_failure(pdb_id1, str(e))
 
         try:
             residues2, prof2 = load_residues_and_profile(pdb2, chain_id2)
         except (FileNotFoundError, ValueError) as e:
+            print(tostr(pdb2, chain_id2))
             return handle_failure(pdb_id2, str(e))
 
         a, b, size, diff = find_maximal_matching_shift(to_seq(residues1), to_seq(residues2), k=len(mutated))
@@ -451,21 +446,20 @@ class PairsLoader(Loader):
         return meta, data
 
 
-class PdbLoader(Loader):
+class SimplePdbLoader(Loader):
     def __init__(self, list_of_items, n_iter):
-        super(PdbLoader, self).__init__(list_of_items, n_iter)
+        super(SimplePdbLoader, self).__init__(list_of_items, n_iter)
 
     def next(self):
         pdb_id1, length = self.list_of_items[self.i_pdb]
-
         pdb1, chain_id1 = pdb_id1.split('_')
-
         try:
             residues1, prof1 = load_residues_and_profile(pdb1, chain_id1)
         except (FileNotFoundError, ValueError) as e:
             return handle_failure(pdb_id1, str(e))
 
         pmat1 = get_distance_matrix(toX(residues1, get_center=get_center2))
+
         seq1 = to_seq(residues1)
         iseq1 = convert_to_indices_sequence(seq1)
         betas1 = to_betas(residues1)
@@ -474,45 +468,41 @@ class PdbLoader(Loader):
             return None
         if len(residues1) < length // 2:
             return None
-
         assert iseq1.shape[0] == pmat1.shape[0]
         assert iseq1.shape[0] == prof1.shape[0]
-
         data = iseq1, betas1, prof1, pmat1.sqrt()
         meta = pdb_id1, seq1
         return meta, data
 
 
-# class StrideLoader(Loader):
-#     def __init__(self, list_of_items, n_iter):
-#         super(StrideLoader, self).__init__(list_of_items, n_iter)
-#
-#     def next(self):
-#         pdb_id1, length = self.list_of_items[self.i_pdb]
-#
-#         pdb1, chain_id1 = pdb_id1.split('_')
-#
-#         try:
-#             residues1, prof1 = load_residues_and_profile(pdb1, chain_id1)
-#         except (FileNotFoundError, ValueError) as e:
-#             return handle_failure(pdb_id1, str(e))
-#
-#         pmat1 = get_distance_matrix(toX(residues1, get_center=get_center2))
-#         seq1 = to_seq(residues1)
-#         iseq1 = convert_to_indices_sequence(seq1)
-#         betas1 = to_betas(residues1)
-#
-#         if not (MIN_LENGTH <= len(residues1) <= MAX_LENGTH):
-#             return None
-#         if len(residues1) < length // 2:
-#             return None
-#
-#         assert iseq1.shape[0] == pmat1.shape[0]
-#         assert iseq1.shape[0] == prof1.shape[0]
-#
-#         data = iseq1, betas1, prof1, pmat1.sqrt()
-#         meta = pdb_id1, seq1
-#         return meta, data
+class PdbLoader(Loader):
+    def __init__(self, list_of_items, n_iter):
+        super(PdbLoader, self).__init__(list_of_items, n_iter)
+
+    def next(self):
+        pdb_id1, length = self.list_of_items[self.i_pdb]
+        pdb1, chain_id1 = pdb_id1.split('_')
+        try:
+            residues1, prof1, dssp1 = load_residues_profile_stride(pdb1, chain_id1)
+        except (FileNotFoundError, ValueError) as e:
+            return handle_failure(pdb_id1, str(e))
+
+        pmat1 = get_distance_matrix(toX(residues1, get_center=get_center2))
+
+        seq1 = to_seq(residues1)
+        iseq1 = convert_to_indices_sequence(seq1)
+        betas1 = to_betas(residues1)
+
+        if not (MIN_LENGTH <= len(residues1) <= MAX_LENGTH):
+            return None
+        if len(residues1) < length // 2:
+            return None
+        assert iseq1.shape[0] == dssp1.shape[0]
+        assert iseq1.shape[0] == pmat1.shape[0]
+        assert iseq1.shape[0] == prof1.shape[0]
+        data = iseq1, betas1, prof1, pmat1.sqrt(), dssp1
+        meta = pdb_id1, seq1
+        return meta, data
 
 
 def pairs_loader(list_of_pairs, n_iter):

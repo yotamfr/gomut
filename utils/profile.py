@@ -4,7 +4,6 @@ import os.path as osp
 from utils.sequence import *
 from utils.constants import *
 from utils.torch_utils import *
-
 MSAS_PATH = osp.join('data', 'msas')
 
 PERM = 'a'

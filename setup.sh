@@ -25,3 +25,7 @@ pip install ipython==6.2.0 notebook
 
 conda install -p gomut -c conda-forge matplotlib
 conda install -p gomut -c conda-forge tqdm
+
+
+### Download and compile STRIDE
+# http://webclu.bio.wzw.tum.de/stride/install.html

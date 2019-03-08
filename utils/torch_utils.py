@@ -7,7 +7,7 @@ from tensorboardX import SummaryWriter
 import os
 import numpy as np
 
-from .cv_utils import *
+from utils.cv_utils import *
 
 
 writer = SummaryWriter('runs')
@@ -107,7 +107,7 @@ class ScheduledOptimizer(object):
         self.opt = opt
         self.losses = []
         self.window = num_iterations
-        self.min_lr = 1e-5
+        self.min_lr = 1e-6
         self.factor = 0.5
 
     def zero_grad(self):

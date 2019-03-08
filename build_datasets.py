@@ -6,6 +6,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 from utils.sequence import FASTA, Sequence
 from utils.cdhit import get_cdhit_clusters
+from utils.loader import load_or_parse_residues
 
 
 def get_pairs(sequence_ids, sequences):
@@ -67,6 +68,13 @@ def generate_pairs():
     df.to_csv("data/pairs.csv", index=False)
 
 
+def download_cullpdb(path='data/cullpdb_pc25_res2.5_R1.0_d190212_chains12714', lim=5):
+    df = pd.read_csv(path, sep=r"\s*", engine='python')
+    for s in tqdm(df.IDs[:lim]):
+        pdb, chain = s[0:4].lower(), s[4]
+        _ = load_or_parse_residues(pdb, chain)
+
+
 def main():
     if not os.path.exists('data/pairs.csv'):
         generate_pairs()
@@ -75,4 +83,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    download_cullpdb(lim=None)
+    # main()

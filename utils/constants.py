@@ -29,4 +29,15 @@ amino_acids = list('ARNDCQEGHILKMFPSTWYV')
 BACKBONE = ['CA', 'C', 'N', 'O']
 
 
-SECONDARY_STRUCTURE = ['B', 'b', 'H', 'G', 'I', 'E', 'H', 'C']
+"""
+   H	    Alpha helix
+   G	    3-10 helix
+   I	    PI-helix
+   E	    Extended conformation
+   B or	b   Isolated bridge
+   T	    Turn
+   C	    Coil (none of the above)
+"""
+
+SECONDARY_STRUCTURE = ['B', 'H', 'G', 'I', 'E', 'H', 'C', 'T']
+PAD_SS = -1
