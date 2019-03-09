@@ -13,8 +13,9 @@ THR_DISTANCE = 1.0
 UPLOAD_IMAGE_EVERY = 100
 LR = 0.0002
 
+# bins = (8.0, 15.0)
 bins = (4.5, 8.0, 15.0)
-# bins = np.arange(4.5, 8.0, 15.5)
+# bins = np.arange(4.5, 15.5, 0.5)
 weight_bins = (8.0, 15.0)
 weights = (20.5, 5.4, 1.0)
 
@@ -46,17 +47,31 @@ def mask_distance_matrix(dmat, weight_bins=weight_bins):
     b, m, n = dmat.size()
     imj = b * [[[abs(i-j) >= 24 for j in range(n)] for i in range(m)]]
     t_imj = torch.tensor(imj, dtype=torch.float, device=device)
-    masks = quantize_distance_matrix(dmat, weight_bins)
+    masks = quantize_distance_matrix(dmat, weight_bins, False)
     return masks, t_imj
 
 
-def quantize_distance_matrix(dmat, bins=bins):
-    qdmat = dmat.unsqueeze(1).repeat(1, len(bins) + 1, 1, 1)
+def quantize_distance_matrix(dmat, bins=bins, use_ordinal=False):
+    b, m, n = dmat.size()
+    assert m == n
+    qdmat = torch.zeros((b, len(bins) + int(not use_ordinal), m, n), dtype=torch.float, device=device)
     qdmat[:, 0, :, :] = (dmat < bins[0])
     for i in range(1, len(bins)):
-        qdmat[:, i, :, :] = (dmat >= bins[i - 1]) * (dmat < bins[i])
-    qdmat[:, len(bins), :, :] = (dmat >= bins[-1])
+        if not use_ordinal:
+            qdmat[:, i, :, :] = (dmat >= bins[i - 1]) * (dmat < bins[i])
+        else:
+            qdmat[:, i, :, :] = (dmat < bins[i])
+    if not use_ordinal:
+        qdmat[:, len(bins), :, :] = (dmat >= bins[-1])
     return qdmat.float()
+
+
+def digitize_distance_matrix(dmat, bins=bins):
+    ddmat = torch.zeros(dmat.size(), dtype=torch.float, device=device)
+    for i in range(1, len(bins)):
+        ddmat[(dmat >= bins[i - 1]) * (dmat < bins[i])] = i
+    ddmat[(dmat >= bins[-1])] = len(bins)
+    return ddmat.float()
 
 
 class OuterProduct(nn.Module):
@@ -73,11 +88,14 @@ class OuterProduct(nn.Module):
 
 
 class Xu(nn.Module):
-    def __init__(self, bins=bins):
+    def __init__(self, ic=40, hc=40, n_blocks=5, bins=bins):
         super(Xu, self).__init__()
-        self.resnet1d_1 = ResNet1d(oc=40)
-        self.resnet2d_1 = ResNet2d(oc=len(bins) + 1)
+        oc = hc + (n_blocks - 1) * 5
+        self.resnet1d_1 = ResNet1d(oc=ic)
+        self.resnet2d_1 = ResNet2d(ic=ic*3, hc=hc, num_num_blocks=n_blocks)
         self.outer_product = OuterProduct()
+        self.out_conv = outconv(oc, len(bins) + 1)
+        self.W = nn.Linear(oc, len(bins) * 2)
 
     def forward(self, seq1, beta1, prof1):
         seq1_onehot = to_onehot(seq1)
@@ -85,28 +103,74 @@ class Xu(nn.Module):
         seq_info = self.resnet1d_1(seq_info.transpose(1, 2))
         op1 = self.outer_product(seq_info, seq_info)
         out = self.resnet2d_1(op1)
+        out = out.add_(out.transpose(2, 3)).div_(2)
+        b, c, m, n = out.size()
+        assert m == n
+        out = self.out_conv(out)
         return out
 
 
-def get_loss(cmap_hat, dmat, weights=weights):
-    b, c, m, n = cmap_hat.size()
-    cmap = quantize_distance_matrix(dmat)
+class Ord(nn.Module):
+    def __init__(self, ic=40, hc=40, n_blocks=5, bins=bins):
+        super(Ord, self).__init__()
+        oc = hc + (n_blocks - 1) * 5
+        self.resnet1d_1 = ResNet1d(oc=ic)
+        self.resnet2d_1 = ResNet2d(ic=ic*3, hc=hc, num_num_blocks=n_blocks)
+        self.outer_product = OuterProduct()
+        self.W = nn.Linear(oc, len(bins) * 2)
+
+    def forward(self, seq1, beta1, prof1):
+        seq1_onehot = to_onehot(seq1)
+        seq_info = torch.cat([seq1_onehot, prof1], 2)
+        seq_info = self.resnet1d_1(seq_info.transpose(1, 2))
+        op1 = self.outer_product(seq_info, seq_info)
+        out = self.resnet2d_1(op1)
+        out = out.add_(out.transpose(2, 3)).div_(2)
+        b, c, m, n = out.size()
+        assert m == n
+        out = self.W(out.view(b, -1, c)).view(b, m, n, -1, 2)
+        return out
+
+
+def compute_weighted_loss_w_masks(losses, dmat, weights=weights):
+    b, m, n = dmat.size()
+    assert m == n
     masks, imj = mask_distance_matrix(dmat)
+    masks, imj = masks.contiguous().view(-1, b * m * n), imj.view(b * m * n)
+    w_losses = torch.zeros(losses.size(), dtype=torch.float, device=device)
+    for i, w in enumerate(weights):
+        msk = masks[i]
+        w_losses.add_(losses * msk * imj * w)
+        w_losses.add_(losses * msk * (1.0 - imj) * max(1.0, w / 2.0))
+    return w_losses
+
+
+def get_cross_entropy_loss(cmap_hat, dmat):
+    b, c, m, n = cmap_hat.size()
+    assert m == n
+    cmap = quantize_distance_matrix(dmat, use_ordinal=False)
     v_cmap = cmap.view(c, b*m*n).transpose(0, 1).unsqueeze(1)
     v_cmap_hat = cmap_hat.view(c, b*m*n).transpose(0, 1).unsqueeze(2)
     ce = -v_cmap.bmm(F.log_softmax(v_cmap_hat, 1)).view(-1)
-    losses = torch.zeros(ce.size(), dtype=torch.float, device=device)
-    imj = imj.view(b*m*n)
-    for i, w in enumerate(weights):
-        msk = masks[:, i, :, :].contiguous().view(b*m*n)
-        losses.add_(ce * msk * imj * w)
-        losses.add_(ce * msk * (1.0 - imj) * max(1.0, w / 2.0))
-    return losses.mean()
+    ce = compute_weighted_loss_w_masks(ce, dmat)
+    return ce.mean()
+
+
+def get_ordinal_log_loss(cmap_hat, dmat):
+    b, m, n, c, _ = cmap_hat.size()
+    assert m == n
+    cmap = quantize_distance_matrix(dmat, use_ordinal=True)
+    v_cmap = cmap.view(c, b * m * n).transpose(0, 1).unsqueeze(1)
+    v_cmap = torch.cat([v_cmap, 1.0 - v_cmap], 1).transpose(1, 2).contiguous()
+    v_cmap_hat = torch.log_softmax(cmap_hat.view(b*m*n, c, -1), 2).contiguous()
+    ce = -v_cmap.view(-1, 2).unsqueeze(1).bmm(v_cmap_hat.view(-1, 2).unsqueeze(2)).view(b*m*n, c).sum(1)
+    ce = compute_weighted_loss_w_masks(ce, dmat)
+    return ce.mean()
 
 
 def predict(model, seq, beta, prof):
-    cmap_hat = model(seq, beta, prof)
-    return cmap_hat
+    out = model(seq, beta, prof)
+    return out
 
 
 def train(model, loader, optimizer, n_iter):
@@ -154,12 +218,12 @@ def evaluate(model, loader, n_iter):
         loss = get_loss(cmap_hat, dmat)
         err += loss.item()
 
-        writer.add_scalars('M3/Loss', {"train": loss.item()}, n_iter)
+        writer.add_scalars('Xu/Loss', {"train": loss.item()}, n_iter)
 
-        pbar.set_description("Validation Loss:%.6f" % (err / (i + 1.),))
+        pbar.set_description("Validation Loss:%.6f (L=%d)" % (err / (i + 1.), seq.size(1)))
         pbar.update(seq.size(0))
 
-    writer.add_scalars('M3/Loss', {"valid": err / (i + 1.)}, n_iter)
+    writer.add_scalars('Xu/Loss', {"valid": err / (i + 1.)}, n_iter)
     pbar.close()
     return err
 
@@ -171,18 +235,27 @@ def add_arguments(parser):
                         help="How many epochs to train the model?")
     parser.add_argument("-o", "--out_dir", type=str, required=False,
                         default=gettempdir(), help="Specify the output directory.")
+    parser.add_argument("-l", "--loss", type=str, choices=["ordinal", "ce"],
+                        default="ce", help="Choose what loss function to use.")
+    parser.add_argument("-d", "--device", type=str, choices=["0", "1"],
+                        default="1", help="Choose a device to run on.")
 
 
 def main():
+    global get_loss, use_ordinal
     import argparse
     parser = argparse.ArgumentParser()
     add_arguments(parser)
     args = parser.parse_args()
 
-    net = Xu()
+    set_available_devices(args.device)
+    use_ordinal = args.loss == 'ordinal'
+    get_loss = get_ordinal_log_loss if use_ordinal else get_cross_entropy_loss
+    net = Ord(ic=15, hc=20) if use_ordinal else Xu(ic=15, hc=20)
+    modelname = 'ord' if use_ordinal else 'xu'
     net.to(device)
     net.register_backward_hook(hook_func)
-    opt = ScheduledOptimizer(optim.Adam(net.parameters(), lr=LR), LR, num_iterations=2000)
+    opt = ScheduledOptimizer(optim.Adam(net.parameters(), lr=LR), LR, num_iterations=20000)
 
     n_iter = 1
     init_epoch = 0
@@ -218,7 +291,7 @@ def main():
             'net': net.state_dict(),
             'opt': opt.state_dict(),
             'loss': loss,
-        }, "xu", args.out_dir, loss < best_yet)
+        }, modelname, args.out_dir, loss < best_yet)
 
         best_yet = min(best_yet, loss)
 

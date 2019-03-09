@@ -12,7 +12,7 @@ np.seterr('raise')
 confProDy(verbosity='none')
 random.seed(101)
 
-PERM = 'a'
+PERM = 'r'
 IDX = h5py.File('data/h5/idx.h5', PERM)
 BETAS = h5py.File('data/h5/betas.h5', PERM)
 COORDS = h5py.File('data/h5/coords.h5', PERM)
@@ -22,8 +22,8 @@ ATOMNAMES = h5py.File('data/h5/atomnames.h5', PERM)
 _, SEQs = FASTA('data/pdb_seqres.txt')
 
 MAX_ALLOWED_SHIFT = 10
-MAX_BATCH_SIZE = 4
-MAX_LENGTH = 700
+MAX_BATCH_SIZE = 1
+MAX_LENGTH = 525
 MIN_LENGTH = 32
 
 
@@ -155,21 +155,19 @@ def prepare_pairs_batch(data):
     return iseq1, iseq2, beta1, beta2, prof1, prof2, pmat1, pmat2, mutix, pdb1, pdb2
 
 
-def batch_generator(loader, prepare):
+def batch_generator(loader, prepare, batch_size=MAX_BATCH_SIZE):
     batch = []
     curr_length = None
     for inp in loader:
         meta, data = inp
         x = data[0]
-        if curr_length is None:
-            curr_length = len(x)
-        if (len(x) != curr_length) or (len(batch) == MAX_BATCH_SIZE):
+        if (len(x) != curr_length) or (len(batch) == batch_size):
             if batch:
                 yield prepare(batch)
-            curr_length = len(x)
             batch = [data + meta]
         else:
             batch.append(data + meta)
+        curr_length = len(x)
     if batch:
         yield prepare(batch)
 

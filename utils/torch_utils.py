@@ -15,6 +15,10 @@ os.environ["CUDA_VISIBLE_DEVICES"] = '1'
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
+def set_available_devices(d):
+    os.environ["CUDA_VISIBLE_DEVICES"] = d
+
+
 class Flatten(nn.Module):
     def forward(self, input):
         return input.view(input.size(0), -1)

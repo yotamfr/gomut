@@ -34,7 +34,7 @@ class residual_block(nn.Module):
 
     def forward(self, x):
         fx = self.conv(x)
-        fx = x + fx
+        fx.add_(x)
         return fx
 
 

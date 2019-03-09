@@ -6,7 +6,7 @@ from utils.constants import *
 from utils.torch_utils import *
 MSAS_PATH = osp.join('data', 'msas')
 
-PERM = 'a'
+PERM = 'r'
 PROFS = h5py.File('data/h5/profiles.h5', PERM)
 
 
