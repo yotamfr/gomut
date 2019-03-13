@@ -5,7 +5,7 @@ from tempfile import gettempdir
 
 from utils.data import *
 from utils.torch_utils import *
-from utils.loader import PdbLoader, batch_generator, prepare_pdb_batch
+from utils.loader import SimplePdbLoader, batch_generator, prepare_pdb_batch
 from resnet.resnet_model import *
 
 
@@ -15,6 +15,7 @@ LR = 0.0002
 
 # bins = (8.0, 15.0)
 bins = (4.5, 8.0, 15.0)
+t_bins = torch.tensor((0,) + bins, dtype=torch.float, device=device)
 # bins = np.arange(4.5, 15.5, 0.5)
 weight_bins = (8.0, 15.0)
 weights = (20.5, 5.4, 1.0)
@@ -90,6 +91,7 @@ class OuterProduct(nn.Module):
 class Xu(nn.Module):
     def __init__(self, ic=40, hc=40, n_blocks=5, bins=bins):
         super(Xu, self).__init__()
+        self.name = 'Xu'
         oc = hc + (n_blocks - 1) * 5
         self.resnet1d_1 = ResNet1d(oc=ic)
         self.resnet2d_1 = ResNet2d(ic=ic*3, hc=hc, num_num_blocks=n_blocks)
@@ -103,16 +105,17 @@ class Xu(nn.Module):
         seq_info = self.resnet1d_1(seq_info.transpose(1, 2))
         op1 = self.outer_product(seq_info, seq_info)
         out = self.resnet2d_1(op1)
-        out = out.add_(out.transpose(2, 3)).div_(2)
         b, c, m, n = out.size()
         assert m == n
-        out = self.out_conv(out)
-        return out
+        A = self.out_conv(out)
+        A = (A + A.transpose(2, 3)) / 2
+        return A
 
 
 class Ord(nn.Module):
     def __init__(self, ic=40, hc=40, n_blocks=5, bins=bins):
         super(Ord, self).__init__()
+        self.name = 'Ord'
         oc = hc + (n_blocks - 1) * 5
         self.resnet1d_1 = ResNet1d(oc=ic)
         self.resnet2d_1 = ResNet2d(ic=ic*3, hc=hc, num_num_blocks=n_blocks)
@@ -124,12 +127,12 @@ class Ord(nn.Module):
         seq_info = torch.cat([seq1_onehot, prof1], 2)
         seq_info = self.resnet1d_1(seq_info.transpose(1, 2))
         op1 = self.outer_product(seq_info, seq_info)
-        out = self.resnet2d_1(op1)
-        out = out.add_(out.transpose(2, 3)).div_(2)
-        b, c, m, n = out.size()
+        A = self.resnet2d_1(op1)
+        b, c, m, n = A.size()
         assert m == n
-        out = self.W(out.view(b, -1, c)).view(b, m, n, -1, 2)
-        return out
+        A = (A + A.transpose(2, 3)) / 2
+        A = self.W(A.view(b, -1, c)).view(b, m, n, -1, 2)
+        return A
 
 
 def compute_weighted_loss_w_masks(losses, dmat, weights=weights):
@@ -173,15 +176,32 @@ def predict(model, seq, beta, prof):
     return out
 
 
+def cmap_to_dmat(cmap):
+    b, _, m, n = cmap.size()
+    assert m == n
+    dmat = torch.gather(t_bins, 0, cmap.argmax(1).view(-1)).view(b, m, n)
+    return dmat
+
+
+def upload_images(dmat, dmat_hat, pdb, n_iter, prefix):
+    for m1, m2, pdb_id in zip(dmat.data.cpu().numpy(), dmat_hat.data.cpu().numpy(), pdb):
+        writer.add_image('%s/%s/cmap_true' % (prefix, pdb_id), to_colormap_image(m1), n_iter, dataformats='HWC')
+        writer.add_image('%s/%s/cmap_pred' % (prefix, pdb_id), to_colormap_image(m2), n_iter, dataformats='HWC')
+
+
 def train(model, loader, optimizer, n_iter):
     model.train()
     err = 0.0
     i = 0
     pbar = tqdm(total=len(loader), desc='records loaded')
-    for i, (seq, beta, prof, dmat, dssp, pdb, *_) in enumerate(batch_generator(loader, prepare_pdb_batch)):
+    for i, (seq, beta, prof, dmat, pdb, *_) in enumerate(batch_generator(loader, prepare_pdb_batch)):
         optimizer.zero_grad()
 
         cmap_hat = predict(model, seq, beta, prof)
+
+        if n_iter % UPLOAD_IMAGE_EVERY == 0:
+            dmat_hat = cmap_to_dmat(cmap_hat)
+            upload_images(dmat, dmat_hat, pdb, n_iter, '%s/%s' % (model.name, 'train'))
 
         loss = get_loss(cmap_hat, dmat)
         err += loss.item()
@@ -211,34 +231,36 @@ def evaluate(model, loader, n_iter):
     err = 0.0
     i = 0
     pbar = tqdm(total=len(loader), desc='records loaded')
-    for i, (seq, beta, prof, dmat, dssp, pdb, *_) in enumerate(batch_generator(loader, prepare_pdb_batch)):
+    for i, (seq, beta, prof, dmat, pdb, *_) in enumerate(batch_generator(loader, prepare_pdb_batch)):
 
         cmap_hat = predict(model, seq, beta, prof)
 
+        if n_iter % UPLOAD_IMAGE_EVERY == 0:
+            dmat_hat = cmap_to_dmat(cmap_hat)
+            upload_images(dmat, dmat_hat, pdb, n_iter, '%s/%s' % (model.name, 'valid'))
+
         loss = get_loss(cmap_hat, dmat)
         err += loss.item()
-
-        writer.add_scalars('Xu/Loss', {"train": loss.item()}, n_iter)
 
         pbar.set_description("Validation Loss:%.6f (L=%d)" % (err / (i + 1.), seq.size(1)))
         pbar.update(seq.size(0))
 
     writer.add_scalars('Xu/Loss', {"valid": err / (i + 1.)}, n_iter)
     pbar.close()
-    return err
+    return err / (i + 1.)
 
 
 def add_arguments(parser):
     parser.add_argument('-r', '--resume', default='', type=str, metavar='PATH',
                         help='path to latest checkpoint (default: none)')
-    parser.add_argument('-n', "--num_epochs", type=int, default=200,
+    parser.add_argument('-n', "--num_epochs", type=int, default=20,
                         help="How many epochs to train the model?")
     parser.add_argument("-o", "--out_dir", type=str, required=False,
                         default=gettempdir(), help="Specify the output directory.")
-    parser.add_argument("-l", "--loss", type=str, choices=["ordinal", "ce"],
+    parser.add_argument("-l", "--loss", type=str, choices=["ord", "ce"],
                         default="ce", help="Choose what loss function to use.")
-    parser.add_argument("-d", "--device", type=str, choices=["0", "1"],
-                        default="1", help="Choose a device to run on.")
+    parser.add_argument("-e", '--eval', action='store_true', default=False,
+                        help="Run in Eval mode.")
 
 
 def main():
@@ -248,11 +270,9 @@ def main():
     add_arguments(parser)
     args = parser.parse_args()
 
-    set_available_devices(args.device)
-    use_ordinal = args.loss == 'ordinal'
+    use_ordinal = args.loss == 'ord'
     get_loss = get_ordinal_log_loss if use_ordinal else get_cross_entropy_loss
     net = Ord(ic=15, hc=20) if use_ordinal else Xu(ic=15, hc=20)
-    modelname = 'ord' if use_ordinal else 'xu'
     net.to(device)
     net.register_backward_hook(hook_func)
     opt = ScheduledOptimizer(optim.Adam(net.parameters(), lr=LR), LR, num_iterations=20000)
@@ -277,8 +297,13 @@ def main():
 
     trainset = TRAIN_SET_CULL_PDB
     testset = VALID_SET_CULL_PDB
-    loader_train = PdbLoader(trainset, train_size)
-    loader_test = PdbLoader(testset, test_size)
+    loader_train = SimplePdbLoader(trainset, train_size)
+    loader_test = SimplePdbLoader(testset, test_size)
+
+    if args.eval:
+        evaluate(net, loader_test, n_iter)
+        return
+
     for epoch in range(init_epoch, num_epochs):
         n_iter = train(net, loader_train, opt, n_iter)
         loss = evaluate(net, loader_test, n_iter)
@@ -291,7 +316,7 @@ def main():
             'net': net.state_dict(),
             'opt': opt.state_dict(),
             'loss': loss,
-        }, modelname, args.out_dir, loss < best_yet)
+        }, net.name, args.out_dir, loss < best_yet)
 
         best_yet = min(best_yet, loss)
 

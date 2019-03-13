@@ -10,8 +10,8 @@ import numpy as np
 from utils.cv_utils import *
 
 
-writer = SummaryWriter('runs')
-os.environ["CUDA_VISIBLE_DEVICES"] = '1'
+writer = SummaryWriter('runs1')
+# os.environ["CUDA_VISIBLE_DEVICES"] = '0'
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 

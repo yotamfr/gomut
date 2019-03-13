@@ -52,9 +52,8 @@ class OuterProduct(nn.Module):
 class M3(nn.Module):
     def __init__(self):
         super(M3, self).__init__()
-
         self.unet1d_1 = UNet1d(n_channels=40, n_classes=32, inner_channels=32)
-        self.unet1d_2 = UNet1d(n_channels=32, n_classes=8, inner_channels=32)
+        self.unet1d_2 = UNet1d(n_channels=32, n_classes=9, inner_channels=32)
         self.unet2d_1 = UNet2d(n_channels=64, n_classes=1, inner_channels=64)
         self.outer_product = OuterProduct()
 
@@ -65,38 +64,55 @@ class M3(nn.Module):
         dssp = self.unet1d_2(seq_info)
         op1 = self.outer_product(seq_info, seq_info)
         out = self.unet2d_1(op1)
-        return torch.sigmoid(out).squeeze(1)
+        return torch.sigmoid(out).squeeze(1), dssp
 
 
-def get_loss(d_hat, d, lam=50.0):
-    msk = (d != 0).float() * lam + (d == 0).float() * 1.0
+def get_loss(d_hat, d, s_hat, s, lam=0.01):
+    ce = None
+    if (s != PAD_SS).sum() > 1:
+        logits = s_hat.transpose(1, 2)
+        target = s[s != PAD_SS].view(s.size(0), -1, 1)
+        logits = logits[s != PAD_SS].view(s.size(0), -1, s_hat.size(1))
+        logpt = F.log_softmax(logits, 2)
+        logpt = logpt.gather(2, target)
+        # pt = torch.exp(logpt)
+        ce = -logpt.squeeze(2).sum(1).mean(0)
+    msk = (d != 0).float() * 1.0 + (d == 0).float() * lam
     bce = ((d == 0).float() * torch.log(torch.clamp(1 - d_hat, min=eps)) +
            (d == 1).float() * torch.log(torch.clamp(d_hat, min=eps)))
-    bce = (-bce * msk).sum((1, 2)).mean().div_(d.size(1)**2)
+    bce = (-bce * msk).sum((1, 2)).mean()
     sym = (d_hat.transpose(1, 2) - d_hat).abs().sum((1, 2)).mean()
-    return bce + sym
+    if ce is None:
+        return bce, sym
+    return bce, sym, ce
 
 
-def predict(model, seq, beta, prof, dmat):
-    cmap = get_contact_map(dmat)
-    cmap_hat = model(seq, beta, prof)
-    return cmap_hat, cmap
+def predict(model, seq, beta, prof):
+    cmap_hat, dssp_hat = model(seq, beta, prof)
+    return cmap_hat, dssp_hat
 
 
 def train(model, loader, optimizer, n_iter):
     model.train()
     err = 0.0
     i = 0
-    pbar = tqdm(total=len(loader), desc='pairs loaded')
-    for i, (seq, beta, prof, dmat, pdb, *_) in enumerate(batch_generator(loader, prepare_pdb_batch)):
+    pbar = tqdm(total=len(loader), desc='records loaded')
+    for i, (seq, beta, prof, dmat, dssp, pdb, *_) in enumerate(batch_generator(loader, prepare_pdb_batch)):
         optimizer.zero_grad()
 
-        cmap_hat, cmap = predict(model, seq, beta, prof, dmat)
-        loss = get_loss(cmap_hat, cmap)
+        cmap_hat, dssp_hat = predict(model, seq, beta, prof)
+        cmap = get_contact_map(dmat)
+
+        losses = get_loss(cmap_hat, cmap, dssp_hat, dssp)
+        loss = sum(losses)
         err += loss.item()
         e = err / (i + 1.)
 
-        writer.add_scalars('M3/Loss', {"train": e}, n_iter)
+        writer.add_scalars('M3/Loss', {"train": loss.item()}, n_iter)
+        writer.add_scalars('M3/CMAP_BCE', {"train": losses[0].item()}, n_iter)
+        writer.add_scalars('M3/SYM_L1', {"train": losses[1].item()}, n_iter)
+        if len(losses) == 3:
+            writer.add_scalars('M3/SS_CE', {"train": losses[2].item()}, n_iter)
 
         try:
             with autograd.detect_anomaly():
@@ -125,12 +141,21 @@ def evaluate(model, loader, n_iter):
     model.eval()
     err = 0.0
     i = 0
-    pbar = tqdm(total=len(loader), desc='pairs loaded')
-    for i, (seq, beta, prof, dmat, pdb, *_) in enumerate(batch_generator(loader, prepare_pdb_batch)):
+    pbar = tqdm(total=len(loader), desc='records loaded')
+    for i, (seq, beta, prof, dmat, dssp, pdb, *_) in enumerate(batch_generator(loader, prepare_pdb_batch)):
 
-        cmap_hat, cmap = predict(model, seq, beta, prof, dmat)
-        loss = get_loss(cmap_hat, cmap)
+        cmap_hat, dssp_hat = predict(model, seq, beta, prof)
+        cmap = get_contact_map(dmat)
+
+        losses = get_loss(cmap_hat, cmap, dssp_hat, dssp)
+        loss = sum(losses)
         err += loss.item()
+
+        writer.add_scalars('M3/Loss', {"train": loss.item()}, n_iter)
+        writer.add_scalars('M3/CMAP_BCE', {"train": losses[0].item()}, n_iter)
+        writer.add_scalars('M3/SYM_L1', {"train": losses[1].item()}, n_iter)
+        if len(losses) == 3:
+            writer.add_scalars('M3/SS_CE', {"train": losses[2].item()}, n_iter)
 
         pbar.set_description("Validation Loss:%.6f" % (err / (i + 1.),))
         pbar.update(seq.size(0))

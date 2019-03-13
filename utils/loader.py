@@ -132,13 +132,15 @@ def convert_to_indices_sequence(seq):
 
 
 def prepare_pdb_batch(data):
-    iseq1, beta1, prof1, pmat1, dssp1, pdb1, *_ = zip(*data)
+    iseq1, beta1, prof1, pmat1, pdb1, *_ = zip(*data)
+    # iseq1, beta1, prof1, pmat1, dssp1, pdb1, *_ = zip(*data)
     iseq1 = torch.stack(iseq1, 0)
     beta1 = torch.stack(beta1, 0)
     prof1 = torch.stack(prof1, 0)
     pmat1 = torch.stack(pmat1, 0)
-    dssp1 = torch.stack(dssp1, 0)
-    return iseq1, beta1, prof1, pmat1, dssp1, pdb1
+    # dssp1 = torch.stack(dssp1, 0)
+    # return iseq1, beta1, prof1, pmat1, dssp1, pdb1
+    return iseq1, beta1, prof1, pmat1, pdb1
 
 
 def prepare_pairs_batch(data):

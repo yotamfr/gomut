@@ -8,7 +8,7 @@ from unet import *
 
 
 THR_DISTANCE = 1.0
-UPLOAD_IMAGE_EVERY = 1000
+UPLOAD_IMAGE_EVERY = 100
 LR = 0.01
 
 
@@ -113,7 +113,7 @@ def train(model, loader, optimizer, n_iter):
     err = 0.0
     i = 0
     pbar = tqdm(total=len(loader), desc='pairs loaded')
-    for i, (s1, s2, b1, b2, p1, p2, m1, m2, idx, pdb1, pdb2, *_) in enumerate(batch_generator(loader, prepare_torch_batch)):
+    for i, (s1, s2, b1, b2, p1, p2, m1, m2, idx, pdb1, pdb2, *_) in enumerate(batch_generator(loader, prepare_pairs_batch)):
         optimizer.zero_grad()
 
         assert s1.shape == s2.shape
@@ -134,12 +134,8 @@ def train(model, loader, optimizer, n_iter):
             raise e
 
         if n_iter % UPLOAD_IMAGE_EVERY == 0:
-            delta1 = ddm.unsqueeze(1).data.cpu().numpy()
-            delta2 = ddm_hat.data.unsqueeze(1).cpu().numpy()
-            for id1, id2, d in zip(pdb1, pdb2, delta1):
-                writer.add_image('M1/%d_iterations/%s-%s_true' % (n_iter, id1, id2), d, n_iter)
-            for id1, id2, d_hat in zip(pdb1, pdb2, delta2):
-                writer.add_image('M1/%d_iterations/%s-%s_pred' % (n_iter, id1, id2), d_hat, n_iter)
+            write_true_pred_pairs("M1", n_iter, pdb1, pdb2, ddm.data.cpu().numpy(), ddm_hat.data.cpu().numpy())
+            write_dist_mats_pairs("M1", n_iter, pdb1, pdb2, m1.data.cpu().numpy(), m2.data.cpu().numpy())
 
         optimizer.step_and_update_lr(loss.item())
         lr = optimizer.lr
@@ -157,7 +153,7 @@ def evaluate(model, loader, n_iter):
     err = 0.0
     i = 0
     pbar = tqdm(total=len(loader), desc='pairs loaded')
-    for i, (s1, s2, b1, b2, p1, p2, m1, m2, idx, pdb1, pdb2, *_) in enumerate(batch_generator(loader, prepare_torch_batch)):
+    for i, (s1, s2, b1, b2, p1, p2, m1, m2, idx, pdb1, pdb2, *_) in enumerate(batch_generator(loader, prepare_pairs_batch)):
 
         assert s1.shape == s2.shape
         assert m1.shape == m2.shape
@@ -213,8 +209,8 @@ def main():
 
     trainset = TRAIN_SET
     testset = VALID_SET
-    loader_train = Loader(trainset, train_size)
-    loader_test = Loader(testset, test_size)
+    loader_train = PairsLoader(trainset, train_size)
+    loader_test = PairsLoader(testset, test_size)
     best_yet = np.inf
     for epoch in range(init_epoch, num_epochs):
         n_iter = train(net, loader_train, opt, n_iter)

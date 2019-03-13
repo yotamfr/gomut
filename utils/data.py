@@ -3,6 +3,9 @@ import random
 import numpy as np
 import pandas as pd
 
+import warnings
+warnings.filterwarnings('ignore')
+
 random.seed(101)
 
 REPO_PATH = os.path.join('data', 'pdbs_gz')
