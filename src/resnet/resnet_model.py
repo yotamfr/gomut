@@ -21,11 +21,11 @@ class ResNet2d(nn.Module):
 
 
 class ResNet1d(nn.Module):
-    def __init__(self, oc=40, n_blocks=3):
+    def __init__(self, input_size=40, output_size=40, n_blocks=3):
         super(ResNet1d, self).__init__()
-        blocks = [residual_block(40, s_filter=17, dim=1)] * n_blocks
+        blocks = [residual_block(input_size, s_filter=17, dim=1)] * n_blocks
         self.blocks = nn.Sequential(*blocks)
-        self.out_conv = outconv(40, oc, dim=1)
+        self.out_conv = outconv(input_size, output_size, dim=1)
 
     def forward(self, x):
         x = self.blocks(x)

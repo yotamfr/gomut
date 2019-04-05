@@ -14,10 +14,10 @@ class residual_block(nn.Module):
 
         if dim == 1:
             self.conv = nn.Sequential(
-                nn.InstanceNorm1d(channels),
+                # nn.InstanceNorm1d(channels),
                 nn.ReLU(inplace=True),
                 nn.Conv1d(channels, channels, s_filter, padding=s_filter // 2),
-                nn.InstanceNorm1d(channels),
+                # nn.InstanceNorm1d(channels),
                 nn.ReLU(inplace=True),
                 nn.Conv1d(channels, channels, s_filter, padding=s_filter // 2),
             )

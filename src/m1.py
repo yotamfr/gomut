@@ -3,8 +3,8 @@ from torch import optim
 from torch import autograd
 from tempfile import gettempdir
 
-from utils.loader import *
-from unet import *
+from src.utils import *
+from src.unet import *
 
 
 THR_DISTANCE = 1.0

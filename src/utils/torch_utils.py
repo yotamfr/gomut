@@ -1,22 +1,29 @@
+import os
+import numpy as np
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from tensorboardX import SummaryWriter
 
-import os
-import numpy as np
-
-from utils.cv_utils import *
+from utils.cv_utils import to_colormap_image
 
 
-writer = SummaryWriter('runs1')
-# os.environ["CUDA_VISIBLE_DEVICES"] = '0'
+writer = SummaryWriter('runs5')
+# os.environ["CUDA_VISIBLE_DEVICES"] = '1'
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
 def set_available_devices(d):
     os.environ["CUDA_VISIBLE_DEVICES"] = d
+
+
+def to_onehot(seq_of_idx, num_classes=20):
+    batch_sz, length = seq_of_idx.size(0), seq_of_idx.size(1)
+    onehot = torch.zeros(batch_sz, length, num_classes, dtype=torch.float, device=device)
+    onehot.scatter_(2, seq_of_idx.unsqueeze(2), 1)
+    return onehot
 
 
 class Flatten(nn.Module):
@@ -34,7 +41,7 @@ class FocalLoss(nn.Module):
         super(FocalLoss, self).__init__()
         self.gamma = gamma
         self.alpha = alpha
-        if isinstance(alpha, (float, int, long)):
+        if isinstance(alpha, (float, int)):
             self.alpha = torch.tensor([alpha, 1-alpha], dtype=torch.float, device=device)
         if isinstance(alpha, list):
             self.alpha = torch.tensor(alpha, dtype=torch.float, device=device)
@@ -42,9 +49,9 @@ class FocalLoss(nn.Module):
 
     def forward(self, logits, target):
         if logits.dim() > 2:
-            logits = logits.view(logits.size(0), logits.size(1), -1)  # N,C,H,W => N,C,H*W
-            logits = logits.transpose(1, 2)                           # N,C,H*W => N,H*W,C
-            logits = logits.contiguous().view(-1, logits.size(2))   # N,H*W,C => N*H*W,C
+            logits = logits.view(logits.size(0), logits.size(1), -1)    # N,C,H,W => N,C,H*W
+            logits = logits.transpose(1, 2)                             # N,C,H*W => N,H*W,C
+            logits = logits.contiguous().view(-1, logits.size(2))       # N,H*W,C => N*H*W,C
         target = target.view(-1, 1)
 
         logpt = F.log_softmax(logits, 1)
@@ -64,8 +71,10 @@ class FocalLoss(nn.Module):
 
 
 def model_summary(model):
+    summary = ''
     for idx, m in enumerate(model.modules()):
-        print(idx, '->', m)
+        summary += '\n%s->%s' % (idx, m)
+    return summary
 
 
 def save_checkpoint(state, prefix, ckptpath, is_best=False):

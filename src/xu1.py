@@ -3,11 +3,11 @@ from torch import optim
 from torch import autograd
 from tempfile import gettempdir
 
-from utils.data import *
 from utils.torch_utils import *
+from utils.data import TRAIN_SET_CULL_PDB, VALID_SET_CULL_PDB
 from utils.loader import SimplePdbLoader, batch_generator, prepare_pdb_batch
-from resnet.resnet_model import *
-
+from resnet import ResNet1d, ResNet2d, outconv
+from unet import UNet1d
 
 THR_DISTANCE = 1.0
 UPLOAD_IMAGE_EVERY = 100
@@ -19,13 +19,6 @@ t_bins = torch.tensor((0,) + bins, dtype=torch.float, device=device)
 # bins = np.arange(4.5, 15.5, 0.5)
 weight_bins = (8.0, 15.0)
 weights = (20.5, 5.4, 1.0)
-
-
-def to_onehot(seq_of_idx, num_classes=20):
-    batch_sz, length = seq_of_idx.size(0), seq_of_idx.size(1)
-    onehot = torch.zeros(batch_sz, length, num_classes, dtype=torch.float, device=device)
-    onehot.scatter_(2, seq_of_idx.unsqueeze(2), 1)
-    return onehot
 
 
 def hook_func(module, grad_inputs, grad_outputs):
@@ -77,14 +70,18 @@ def digitize_distance_matrix(dmat, bins=bins):
 
 class OuterProduct(nn.Module):
 
-    def __init__(self):
+    def __init__(self, include_mid=True):
         super(OuterProduct, self).__init__()
+        self.include_middle = include_mid
 
     def forward(self, seq1, seq2):
         m = seq1.size(2)
         v_i = (seq1.transpose(1, 2).unsqueeze(2).repeat(1, 1, m, 1))
         v_j = v_i.transpose(1, 2)
-        v = torch.cat([v_i, v_j, (v_i + v_j).div(2)], 3)
+        if self.include_middle:
+            v = torch.cat([v_i, v_j, (v_i + v_j).div(2)], 3)
+        else:
+            v = torch.cat([v_i, v_j], 3)
         return v.permute(0, 3, 1, 2)
 
 
@@ -93,16 +90,38 @@ class Xu(nn.Module):
         super(Xu, self).__init__()
         self.name = 'Xu'
         oc = hc + (n_blocks - 1) * 5
-        self.resnet1d_1 = ResNet1d(oc=ic)
+        self.resnet1d_1 = ResNet1d(output_size=ic)
         self.resnet2d_1 = ResNet2d(ic=ic*3, hc=hc, num_num_blocks=n_blocks)
-        self.outer_product = OuterProduct()
+        self.outer_product = OuterProduct(include_mid=True)
         self.out_conv = outconv(oc, len(bins) + 1)
         self.W = nn.Linear(oc, len(bins) * 2)
 
-    def forward(self, seq1, beta1, prof1):
-        seq1_onehot = to_onehot(seq1)
+    def forward(self, seq1_onehot, beta1, prof1):
         seq_info = torch.cat([seq1_onehot, prof1], 2)
         seq_info = self.resnet1d_1(seq_info.transpose(1, 2))
+        op1 = self.outer_product(seq_info, seq_info)
+        out = self.resnet2d_1(op1)
+        b, c, m, n = out.size()
+        assert m == n
+        A = self.out_conv(out)
+        A = (A + A.transpose(2, 3)) / 2
+        return A
+
+
+class XuU(nn.Module):
+    def __init__(self, input_size=40, ic=40, hc=40, n_blocks=5, bins=bins):
+        super(XuU, self).__init__()
+        self.name = 'XuU'
+        oc = hc + (n_blocks - 1) * 5
+        self.unet1d_1 = UNet1d(n_channels=input_size, inner_channels=hc, n_classes=ic)
+        self.resnet2d_1 = ResNet2d(ic=ic*3, hc=hc, num_num_blocks=n_blocks)
+        self.outer_product = OuterProduct(include_mid=True)
+        self.out_conv = outconv(oc, len(bins) + 1)
+        self.W = nn.Linear(oc, len(bins) * 2)
+
+    def forward(self, seq1_onehot, beta1, prof1):
+        seq_info = torch.cat([seq1_onehot, prof1], 2)
+        seq_info = self.unet1d_1(seq_info.transpose(1, 2))
         op1 = self.outer_product(seq_info, seq_info)
         out = self.resnet2d_1(op1)
         b, c, m, n = out.size()
@@ -117,13 +136,12 @@ class Ord(nn.Module):
         super(Ord, self).__init__()
         self.name = 'Ord'
         oc = hc + (n_blocks - 1) * 5
-        self.resnet1d_1 = ResNet1d(oc=ic)
+        self.resnet1d_1 = ResNet1d(output_size=ic)
         self.resnet2d_1 = ResNet2d(ic=ic*3, hc=hc, num_num_blocks=n_blocks)
         self.outer_product = OuterProduct()
         self.W = nn.Linear(oc, len(bins) * 2)
 
-    def forward(self, seq1, beta1, prof1):
-        seq1_onehot = to_onehot(seq1)
+    def forward(self, seq1_onehot, beta1, prof1):
         seq_info = torch.cat([seq1_onehot, prof1], 2)
         seq_info = self.resnet1d_1(seq_info.transpose(1, 2))
         op1 = self.outer_product(seq_info, seq_info)
@@ -176,10 +194,15 @@ def predict(model, seq, beta, prof):
     return out
 
 
-def cmap_to_dmat(cmap):
+def ce_cmap_to_dmat(cmap):
     b, _, m, n = cmap.size()
-    assert m == n
     dmat = torch.gather(t_bins, 0, cmap.argmax(1).view(-1)).view(b, m, n)
+    return dmat
+
+
+def ordinal_cmap_to_dmat(cmap):
+    b, m, n, _, _ = cmap.size()
+    dmat = torch.gather(t_bins, 0, cmap.argmax(4).sum(3).view(-1)).view(b, m, n)
     return dmat
 
 
@@ -207,7 +230,7 @@ def train(model, loader, optimizer, n_iter):
         err += loss.item()
         e = err / (i + 1.)
 
-        writer.add_scalars('Xu/Loss', {"train": loss.item()}, n_iter)
+        writer.add_scalars('%s/Loss' % model.name, {"train": loss.item()}, n_iter)
 
         try:
             with autograd.detect_anomaly():
@@ -235,9 +258,9 @@ def evaluate(model, loader, n_iter):
 
         cmap_hat = predict(model, seq, beta, prof)
 
-        if n_iter % UPLOAD_IMAGE_EVERY == 0:
+        if i % UPLOAD_IMAGE_EVERY == 0:
             dmat_hat = cmap_to_dmat(cmap_hat)
-            upload_images(dmat, dmat_hat, pdb, n_iter, '%s/%s' % (model.name, 'valid'))
+            upload_images(dmat, dmat_hat, pdb, i, '%s/%s' % (model.name, 'valid'))
 
         loss = get_loss(cmap_hat, dmat)
         err += loss.item()
@@ -245,7 +268,7 @@ def evaluate(model, loader, n_iter):
         pbar.set_description("Validation Loss:%.6f (L=%d)" % (err / (i + 1.), seq.size(1)))
         pbar.update(seq.size(0))
 
-    writer.add_scalars('Xu/Loss', {"valid": err / (i + 1.)}, n_iter)
+    writer.add_scalars('%s/Loss' % model.name, {"valid": err / (i + 1.)}, n_iter)
     pbar.close()
     return err / (i + 1.)
 
@@ -264,7 +287,7 @@ def add_arguments(parser):
 
 
 def main():
-    global get_loss, use_ordinal
+    global get_loss, cmap_to_dmat, use_ordinal
     import argparse
     parser = argparse.ArgumentParser()
     add_arguments(parser)
@@ -272,6 +295,7 @@ def main():
 
     use_ordinal = args.loss == 'ord'
     get_loss = get_ordinal_log_loss if use_ordinal else get_cross_entropy_loss
+    cmap_to_dmat = ordinal_cmap_to_dmat if use_ordinal else ce_cmap_to_dmat
     net = Ord(ic=15, hc=20) if use_ordinal else Xu(ic=15, hc=20)
     net.to(device)
     net.register_backward_hook(hook_func)
@@ -299,6 +323,8 @@ def main():
     testset = VALID_SET_CULL_PDB
     loader_train = SimplePdbLoader(trainset, train_size)
     loader_test = SimplePdbLoader(testset, test_size)
+
+    # print(model_summary(net))
 
     if args.eval:
         evaluate(net, loader_test, n_iter)

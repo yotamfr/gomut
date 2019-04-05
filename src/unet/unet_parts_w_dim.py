@@ -16,20 +16,20 @@ class double_conv(nn.Module):
         if dim == 1:
             self.conv = nn.Sequential(
                 nn.Conv1d(in_ch, out_ch, 3, padding=1),
-                nn.BatchNorm1d(out_ch),
+                nn.InstanceNorm1d(out_ch),
                 nn.ReLU(inplace=True),
                 nn.Conv1d(out_ch, out_ch, 3, padding=1),
-                nn.BatchNorm1d(out_ch),
+                nn.InstanceNorm1d(out_ch),
                 nn.ReLU(inplace=True)
             )
 
         elif dim == 2:
             self.conv = nn.Sequential(
                 nn.Conv2d(in_ch, out_ch, 3, padding=1),
-                nn.BatchNorm2d(out_ch),
+                nn.InstanceNorm2d(out_ch),
                 nn.ReLU(inplace=True),
                 nn.Conv2d(out_ch, out_ch, 3, padding=1),
-                nn.BatchNorm2d(out_ch),
+                nn.InstanceNorm2d(out_ch),
                 nn.ReLU(inplace=True)
             )
 

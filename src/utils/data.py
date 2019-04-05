@@ -1,6 +1,7 @@
+from utils import DATA_HOME
+
 import os
 import random
-import numpy as np
 import pandas as pd
 
 import warnings
@@ -8,10 +9,14 @@ warnings.filterwarnings('ignore')
 
 random.seed(101)
 
-REPO_PATH = os.path.join('data', 'pdbs_gz')
-PAIRS_PATH = os.path.join('data', 'pairs.csv')
-FAILED_PDBs_PATH = os.path.join('data', 'failed_pdbs.csv')
-CULL_PDB_PATH = os.path.join('data', 'cullpdb_pc25_res2.5_R1.0_d190212_chains12714')
+REPO_PATH = os.path.join(DATA_HOME, 'pdbs_gz')
+PAIRS_PATH = os.path.join(DATA_HOME, 'etc', 'pairs.csv')
+FAILED_PDBs_PATH = os.path.join(DATA_HOME, 'etc', 'failed_pdbs.csv')
+CULL_PDB_PATH = os.path.join(DATA_HOME, 'etc', 'cullpdb_pc25_res2.5_R1.0_d190212_chains12714')
+
+XU_TRAIN_SET = os.path.join(DATA_HOME, 'xu', 'pdb25-train-6767.release.contactFeatures.pkl')
+XU_VALID_SET = os.path.join(DATA_HOME, 'xu', 'pdb25-valid-6767.release.contactFeatures.pkl')
+XU_TEST_SET = os.path.join(DATA_HOME, 'xu', 'pdb25-test-500.release.contactFeatures.pkl')
 
 CULL_PDB_DF = pd.read_csv(CULL_PDB_PATH, sep=r"\s*", engine='python')
 CULL_PDBs = [["%s_%s" % (s[0:4].lower(), s[4]), l] for s, l in CULL_PDB_DF[["IDs", "length"]].values]
