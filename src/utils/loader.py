@@ -231,7 +231,7 @@ class XuLoader(object):
     def __init__(self, path_to_pickle):
         with open(path_to_pickle, 'rb') as f:
             self._d = d = pickle.load(f, encoding='bytes')
-        self._p = sorted(range(len(self)), key=lambda i: d[i][b'length'])
+        self._p = sorted(range(len(self)), key=lambda i: len(d[i][b'sequence']))
         self.n_epoch = 0
         self.i_iter = 0
 

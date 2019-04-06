@@ -1,5 +1,7 @@
 import os
+import math
 import numpy as np
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -45,6 +47,13 @@ def load_checkpoint(net, checkpoint):
 def set_learning_rate(lr, optimizer):
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
+
+
+# def step_decay(epoch, drop=0.5, epochs_drop=2.0):
+#    initial_lrate = 0.1
+#    lrate = initial_lrate * math.pow(drop,
+#            math.floor((1+epoch)/epochs_drop))
+#    return lrate
 
 
 class ScheduledOptimizer(object):

@@ -135,10 +135,10 @@ def main():
 
     get_loss = get_cross_entropy_loss
     cmap_to_dmat = ce_cmap_to_dmat
-    net = Xu0(ic=15, hc=20)
+    net = Xu0(ic=20, hc=20)
     net.to(device)
     net.register_backward_hook(hook_func)
-    opt = ScheduledOptimizer(optim.Adam(net.parameters(), lr=LR), LR, num_iterations=20000)
+    opt = ScheduledOptimizer(optim.Adam(net.parameters(), lr=LR), LR, num_iterations=2000)
 
     n_iter = 1
     init_epoch = 0
@@ -156,8 +156,8 @@ def main():
         else:
             print("=> no checkpoint found at '%s'" % args.resume)
 
-    trainset = YOTAM_TRAIN_SET
-    testset = YOTAM_VALID_SET
+    trainset = XU_TRAIN_SET
+    testset = XU_VALID_SET
     loader_train = XuLoader(trainset)
     loader_test = XuLoader(testset)
 

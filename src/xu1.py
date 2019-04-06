@@ -4,7 +4,7 @@ from torch import autograd
 from tempfile import gettempdir
 
 from utils.torch_xu_utils import *
-from utils.data import TRAIN_SET_CULL_PDB, VALID_SET_CULL_PDB, YOTAM_TRAIN_SET, YOTAM_VALID_SET
+from utils.data import XU_TRAIN_SET, XU_VALID_SET, YOTAM_TRAIN_SET, YOTAM_VALID_SET
 from utils.loader import XuLoader, batch_generator, prepare_xu_batch
 from resnet import ResNet1d, ResNet2d, outconv
 from unet import UNet1d
@@ -177,10 +177,10 @@ def main():
     use_ordinal = args.loss == 'ord'
     get_loss = get_ordinal_log_loss if use_ordinal else get_cross_entropy_loss
     cmap_to_dmat = ordinal_cmap_to_dmat if use_ordinal else ce_cmap_to_dmat
-    net = Ord(ic=15, hc=20) if use_ordinal else Xu1(ic=15, hc=20)
+    net = Ord(ic=20, hc=20) if use_ordinal else Xu1(ic=15, hc=20)
     net.to(device)
     net.register_backward_hook(hook_func)
-    opt = ScheduledOptimizer(optim.Adam(net.parameters(), lr=LR), LR, num_iterations=20000)
+    opt = ScheduledOptimizer(optim.Adam(net.parameters(), lr=LR), LR, num_iterations=2000)
 
     n_iter = 1
     init_epoch = 0
@@ -200,8 +200,8 @@ def main():
         else:
             print("=> no checkpoint found at '%s'" % args.resume)
 
-    trainset = YOTAM_TRAIN_SET
-    testset = YOTAM_VALID_SET
+    trainset = XU_TRAIN_SET
+    testset = XU_VALID_SET
     loader_train = XuLoader(trainset)
     loader_test = XuLoader(testset)
 
@@ -214,8 +214,8 @@ def main():
     for epoch in range(init_epoch, num_epochs):
         n_iter = train(net, loader_train, opt, n_iter)
         loss = evaluate(net, loader_test, n_iter)
-        loader_train.reset()
-        loader_test.reset()
+        loader_train.shuffle()
+        loader_test.shuffle()
 
         save_checkpoint({
             'lr': opt.lr,
