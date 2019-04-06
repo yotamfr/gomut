@@ -8,7 +8,7 @@ from utils.stride import *
 
 LOAD_CCM = False
 
-if LOAD_CCM: from .ccmpred import *
+if LOAD_CCM: from utils.ccmpred import *
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
@@ -27,7 +27,7 @@ _, SEQs = FASTA(osp.join(DATA_HOME, 'etc', 'pdb_seqres.txt'))
 
 MAX_ALLOWED_SHIFT = 10
 MAX_BATCH_SIZE = 1
-MAX_LENGTH = 400
+MAX_LENGTH = 300
 MIN_LENGTH = 32
 
 
@@ -110,7 +110,7 @@ def get_contact_map(pmat, thr=8.0):
 
 
 def get_distance_matrix(X):
-    return pairwise_distances(torch.tensor(X, dtype=torch.float, device=device))
+    return pairwise_distances(torch.tensor(X, dtype=torch.float, device=device)).sqrt()
 
 
 def aa2onehot(aa):
@@ -131,6 +131,15 @@ def aa2onehot(aa):
 
 def convert_to_onehot_sequence(seq):
     return torch.tensor([aa2onehot(aa) for aa in seq], dtype=torch.float, device=device)
+
+
+def prepare_xu_batch(data):
+    seq, prof, cmat, dmat, pdb, *_ = zip(*data)
+    ohot = torch.stack([convert_to_onehot_sequence(s) for s in seq], 0)
+    prof = torch.stack([torch.tensor(p, device=device, dtype=torch.float) for p in prof], 0)
+    dmat = torch.stack([torch.tensor(d, device=device, dtype=torch.float) for d in dmat], 0)
+    cmat = torch.stack([torch.tensor(c, device=device, dtype=torch.float) for c in cmat], 0)
+    return ohot, prof, cmat, dmat, pdb
 
 
 def prepare_pdb_batch(data):

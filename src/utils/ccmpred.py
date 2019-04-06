@@ -7,7 +7,7 @@ import numpy as np
 from utils.torch_utils import device
 from utils.sequence import FASTA
 
-PERM = 'a'
+PERM = 'r'
 
 
 CCM_HOME = "/home/yotamfr/development/ccmpred"

@@ -87,7 +87,7 @@ class PairsLoader(Loader):
         assert iseq1.shape[0] == prof1.shape[0]
         assert iseq2.shape[0] == prof2.shape[0]
 
-        data = iseq1, iseq2, betas1, betas2, prof1, prof2, pmat1.sqrt(), pmat2.sqrt(), mutix
+        data = iseq1, iseq2, betas1, betas2, prof1, prof2, pmat1, pmat2, mutix
         meta = pdb_id1, pdb_id2, seq1, seq2
         return meta, data
 
@@ -125,7 +125,7 @@ class SimplePdbLoader(Loader):
 
         assert iseq1.shape[0] == pmat1.shape[0]
         assert iseq1.shape[0] == prof1.shape[0]
-        data = iseq1, betas1, prof1, pmat1.sqrt()
+        data = iseq1, betas1, prof1, pmat1
         meta = pdb_id1, seq1
         return meta, data
 
@@ -165,7 +165,7 @@ class PdbLoader(Loader):
         assert iseq1.shape[0] == dssp1.shape[0]
         assert iseq1.shape[0] == pmat1.shape[0]
         assert iseq1.shape[0] == prof1.shape[0]
-        data = iseq1, betas1, prof1, pmat1.sqrt(), dssp1
+        data = iseq1, betas1, prof1, pmat1, dssp1
         meta = pdb_id1, seq1
         return meta, data
 
@@ -228,65 +228,74 @@ def pairs_loader(list_of_pairs, n_iter):
 
 class XuLoader(object):
 
-    def __init__(self, path_to_pickle, shuffle_data=True):
+    def __init__(self, path_to_pickle):
         with open(path_to_pickle, 'rb') as f:
-            self._d = pickle.load(f, encoding='bytes')
-        self._p = np.random.permutation(len(self._d))
-        self.shuffle = shuffle_data
+            self._d = d = pickle.load(f, encoding='bytes')
+        self._p = sorted(range(len(self)), key=lambda i: d[i][b'length'])
+        self.n_epoch = 0
         self.i_iter = 0
 
     def reset(self):
         self.i_iter = 0
+        self.n_epoch += 1
+
+    def shuffle(self):
+        self.reset()
+        np.random.seed(self.n_epoch)
+        self._p = np.random.permutation(len(self))
 
     def __len__(self):
         return len(self._d)
 
     def __next__(self):
-        if self.i_iter < len(self):
-            ret = None
-            while ret is None:
-                ret = self.next()
-                self.i_iter += 1
-            return ret
-        else:
+        ret = None
+        while (ret is None) and (self.i_iter < len(self)):
+            ret = self.next()
+            self.i_iter += 1
+        if ret is None:
             save_failures()
             raise StopIteration
+        return ret
 
     def __iter__(self):
         return self
 
     def __getitem__(self, i):
-        return self._d[self._p[i]] if self.shuffle else self._d[i]
+        return self._d[self._p[i]]
 
     def next(self):
         rec = self[self.i_iter]
         name = rec[b'name'].decode('utf8')
+        sequence = rec[b'sequence'].decode('utf8')
         pdb, chain_id = name[:4], name[4:]
-        ix = [any(row != -1) for row in rec[b'contactMatrix']]
         residues = load_or_parse_residues(pdb, chain_id)
         try:
             assert residues is not None
         except AssertionError as e:
             return None
-        cmat = rec[b'ccmpredZ'][ix, :][:, ix]
-        pssm = rec[b'PSFM'][ix]
-        sequence = rec[b'sequence'].decode('utf8')
-        seq = ''.join(np.asarray(list(sequence))[ix])
+        cmat = rec[b'ccmpredZ']
+        profile = rec[b'PSFM']
         seqres = to_seq(residues)
-        m = align(seqres, seq)
-        seq = seq[m.b:m.b+m.size]
+        m = align(seqres, sequence)
+        seq = sequence[m.b:m.b+m.size]
         coords = toX(residues[m.a:m.a+m.size])
-        if not (MIN_LENGTH <= len(coords) <= MAX_LENGTH):
-            return None
-        dmat = get_distance_matrix(coords)
         cmat = cmat[m.b:m.b+m.size, m.b:m.b+m.size]
-        pssm = pssm[m.b:m.b+m.size]
+        prof = profile[m.b:m.b+m.size, :]
+        if len(seq) < MIN_LENGTH:
+            return None
+        if len(coords) > MAX_LENGTH:
+            start = np.random.randint(0, max(0, len(coords) // 2))
+            end = min(len(coords), start + len(coords) // 2)
+            coords = coords[start:end]
+            cmat = cmat[start:end, start:end]
+            prof = prof[start:end, :]
+        dmat = get_distance_matrix(coords)
         try:
             assert cmat.shape == dmat.shape
-            assert len(pssm) == len(dmat) == len(seq)
+            assert len(prof) == len(dmat) == len(seq)
             assert dmat.shape[0] == dmat.shape[1]
         except AssertionError as e:
             return None
-        data = [seq, pssm, cmat, dmat]
+        data = [seq, prof, cmat, dmat]
         meta = [name]
         return meta, data

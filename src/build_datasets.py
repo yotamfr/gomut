@@ -92,9 +92,9 @@ def download_cullpdb(data_home=DATA_HOME, cull_fname='cullpdb_pc25_res2.5_R1.0_d
              os.path.join(data_home, 'delta.fas'))
 
 
-def build_dataset(pdbs=CULL_PDBs):
+def build_dataset(dataset_name, cull_pdbs=CULL_PDBs, data_home=DATA_HOME):
     dataset = []
-    for pdb_id, length in tqdm(pdbs, desc="chains processed"):
+    for pdb_id, length in tqdm(cull_pdbs, desc="chains processed"):
         pdb, chain_id = pdb_id.split('_')
         pth_to_msa = glob("%s/msas/%s.a3m" % (DATA_HOME, pdb_id))
         pth_to_mat = glob("%s/ccm/%s.mat" % (DATA_HOME, pdb_id))
@@ -105,16 +105,17 @@ def build_dataset(pdbs=CULL_PDBs):
             stride = get_stride_dataframe(pdb, chain_id)
         except AssertionError:
             continue
-        dataset.append({b'name': pdb_id,
-                        b'length': length,
-                        b'sequence': str(SEQs[pdb_id].seq),
-                        b'ccmpredZ': ccm_mat,
-                        b'PSFM': read_profile_from_msa(pdb_id),
-                        b'stride_seq': list(map(to_one_letter, stride.AA)),
-                        b'stride_ss7': list(stride.SS)})
+        rec = {b'name': "{}{}".format(pdb, chain_id).encode('utf-8'),
+               b'length': length,
+               b'sequence': str(SEQs[pdb_id].seq).encode('utf-8'),
+               b'ccmpredZ': ccm_mat,
+               b'PSFM': read_profile_from_msa(pdb_id).T,
+               b'stride_seq': ''.join(map(to_one_letter, stride.AA)).encode('utf-8'),
+               b'stride_ss7': list(stride.SS)}
+        dataset.append(rec)
     if len(dataset) == 0:
         return
-    with open(os.path.join('data', 'xu', 'pdb25-train-valid-test-%d.pkl' % len(dataset)), 'w+b') as f:
+    with open(os.path.join(data_home, 'xu', 'pdb25-%s-%d.pkl' % (dataset_name, len(dataset))), 'w+b') as f:
         pickle.dump(dataset, f,  protocol=pickle.HIGHEST_PROTOCOL)
 
 
@@ -136,6 +137,9 @@ def main(data_home=DATA_HOME):
 
 
 if __name__ == "__main__":
+    from utils.data_utils import TRAIN_SET_CULL_PDB, VALID_SET_CULL_PDB, TEST_SET_CULL_PDB
     # download_cullpdb(lim=None)
-    build_dataset()
+    build_dataset('train', TRAIN_SET_CULL_PDB)
+    build_dataset('valid', VALID_SET_CULL_PDB)
+    build_dataset('test', TEST_SET_CULL_PDB)
     # main()

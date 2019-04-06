@@ -28,6 +28,8 @@ def to_one_letter(three_letter_name):
     try:
         return AA_dict[three_letter_name]
     except KeyError:
+        if three_letter_name == 'PHD':
+            return 'D'
         if three_letter_name == 'TPO':
             return 'T'
         if three_letter_name == 'SEP':
