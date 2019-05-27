@@ -39,3 +39,11 @@ def FASTA(filename):
         else:
             sequences[uid].seq += line.rstrip('\n').rstrip('*')
     return order, sequences
+
+
+def to_fasta(sequences, out_file):
+    lines = []
+    for seq in sequences:
+        lines.append(">%s\n%s\n" % (seq.id, seq.seq))
+    with open(out_file, "w+") as f:
+        f.writelines(lines)

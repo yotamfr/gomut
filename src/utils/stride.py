@@ -1,4 +1,4 @@
-from utils import DATA_HOME
+from src.utils import DATA_HOME
 
 import os
 import io
@@ -10,7 +10,7 @@ import subprocess
 import pandas as pd
 from prody import fetchPDB
 
-from utils.constants import SECONDARY_STRUCTURE, AA_dict
+from src.utils import SECONDARY_STRUCTURE, AA_dict
 
 STRIDE_HOME = '/home/yotamfr/development/gomut/stride'
 

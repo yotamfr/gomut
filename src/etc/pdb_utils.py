@@ -1,7 +1,7 @@
 import numpy as np
 from functools import lru_cache
 from functools import reduce
-from constants import to_one_letter
+from utils import to_one_letter
 
 AA_dict = {
     "ALA": "A",
