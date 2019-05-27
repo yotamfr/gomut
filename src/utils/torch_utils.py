@@ -3,16 +3,10 @@ import math
 import numpy as np
 
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
-
 from tensorboardX import SummaryWriter
-from utils.cv_utils import to_colormap_image
+from src.utils.cv_utils import to_colormap_image
 
-
-writer = SummaryWriter('runs7')
-# os.environ["CUDA_VISIBLE_DEVICES"] = '1'
+writer = SummaryWriter('runs9')
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
@@ -44,30 +38,59 @@ def load_checkpoint(net, checkpoint):
     net.load_state_dict(weight_dic)
 
 
+def get_learning_rate(optimizer):
+    for param_group in optimizer.param_groups:
+        return param_group['lr']
+
+
 def set_learning_rate(lr, optimizer):
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
 
-# def step_decay(epoch, drop=0.5, epochs_drop=2.0):
-#    initial_lrate = 0.1
-#    lrate = initial_lrate * math.pow(drop,
-#            math.floor((1+epoch)/epochs_drop))
-#    return lrate
-
-
 class ScheduledOptimizer(object):
 
-    def __init__(self, opt, initial_lr, num_iterations=1000):
-        self._lr = initial_lr
+    def __init__(self, opt, min_lrate=1e-6):
+        self.init_lrate = get_learning_rate(opt)
+        self.min_lr = min_lrate
         self.opt = opt
-        self.losses = []
-        self.window = num_iterations
-        self.min_lr = 1e-6
-        self.factor = 0.5
 
     def zero_grad(self):
         self.opt.zero_grad()
+
+    @property
+    def lr(self):
+        return get_learning_rate(self.opt)
+
+    @lr.setter
+    def lr(self, val):
+        set_learning_rate(val, self.opt)
+
+    def load_state_dict(self, dic):
+        self.opt.load_state_dict(dic)
+
+    def state_dict(self):
+        return self.opt.state_dict()
+
+
+class ScheduledStepOptimizer(ScheduledOptimizer):
+
+    def __init__(self, opt, drop=0.5, iters_drop=1e5):
+        super(ScheduledStepOptimizer, self).__init__(opt)
+        self.iters_drop = iters_drop
+        self.drop = drop
+
+    def step_and_update_lr(self, n_iter):
+        self.lr = self.init_lrate * math.pow(self.drop, math.floor(n_iter/self.iters_drop))
+
+
+class ScheduledMovingAverageOptimizer(ScheduledOptimizer):
+
+    def __init__(self, opt, num_iterations=1000):
+        super(ScheduledMovingAverageOptimizer, self).__init__(opt)
+        self.losses = []
+        self.window = num_iterations
+        self.factor = 0.5
 
     def step_and_update_lr(self, loss):
         self.opt.step()
@@ -83,21 +106,6 @@ class ScheduledOptimizer(object):
             return
         self.lr = max(self.lr * self.factor, self.min_lr)
         self.losses = []     # restart loss count
-
-    @property
-    def lr(self):
-        return self._lr
-
-    @lr.setter
-    def lr(self, val):
-        set_learning_rate(val, self.opt)
-        self._lr = val
-
-    def load_state_dict(self, dic):
-        self.opt.load_state_dict(dic)
-
-    def state_dict(self):
-        return self.opt.state_dict()
 
 
 def shuffle(data, labels):

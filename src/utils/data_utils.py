@@ -1,14 +1,19 @@
+from itertools import combinations
+from collections import defaultdict
+from scipy.stats import pearsonr
+from tqdm import tqdm
+
 from prody import parsePDB, fetchPDB, confProDy
 from collections import OrderedDict
 from difflib import SequenceMatcher
-from utils.constants import PAD_SS, to_one_letter, BACKBONE
-from utils.profile import *
-from utils.data import *
-from utils.stride import *
+from src.utils import PAD_SS, to_one_letter, BACKBONE
+from src.utils.profile import *
+from src.utils.data import *
+from src.utils.stride import *
 
 LOAD_CCM = False
 
-if LOAD_CCM: from utils.ccmpred import *
+if LOAD_CCM: from src.utils.ccmpred import *
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
@@ -27,7 +32,7 @@ _, SEQs = FASTA(osp.join(DATA_HOME, 'etc', 'pdb_seqres.txt'))
 
 MAX_ALLOWED_SHIFT = 10
 MAX_BATCH_SIZE = 1
-MAX_LENGTH = 300
+MAX_LENGTH = 512
 MIN_LENGTH = 32
 
 
@@ -162,17 +167,17 @@ def prepare_pdb_batch_w_dssp(data):
 
 
 def prepare_pairs_batch(data):
-    iseq1, iseq2, beta1, beta2, prof1, prof2, pmat1, pmat2, mutix, pdb1, pdb2, *_ = zip(*data)
-    iseq1 = torch.stack(iseq1, 0)
-    iseq2 = torch.stack(iseq2, 0)
-    beta1 = torch.stack(beta1, 0)
-    beta2 = torch.stack(beta2, 0)
-    prof1 = torch.stack(prof1, 0)
-    prof2 = torch.stack(prof2, 0)
-    pmat1 = torch.stack(pmat1, 0)
-    pmat2 = torch.stack(pmat2, 0)
-    mutix = torch.stack(mutix, 0)
-    return iseq1, iseq2, beta1, beta2, prof1, prof2, pmat1, pmat2, mutix, pdb1, pdb2
+    iseq1, iseq2, beta1, beta2, prof1, prof2, dmat1, dmat2, mut_ix, pdb1, pdb2, *_ = zip(*data)
+    ohot1 = torch.stack([convert_to_onehot_sequence(s) for s in iseq1], 0)
+    ohot2 = torch.stack([convert_to_onehot_sequence(s) for s in iseq2], 0)
+    beta1 = torch.stack([torch.tensor(b, device=device, dtype=torch.float) for b in beta1], 0)
+    beta2 = torch.stack([torch.tensor(b, device=device, dtype=torch.float) for b in beta2], 0)
+    prof1 = torch.stack([torch.tensor(p, device=device, dtype=torch.float) for p in prof1], 0)
+    prof2 = torch.stack([torch.tensor(p, device=device, dtype=torch.float) for p in prof2], 0)
+    dmat1 = torch.stack([torch.tensor(d, device=device, dtype=torch.float) for d in dmat1], 0)
+    dmat2 = torch.stack([torch.tensor(d, device=device, dtype=torch.float) for d in dmat2], 0)
+    mut_ix = torch.stack(mut_ix, 0)
+    return ohot1, ohot2, beta1, beta2, prof1, prof2, dmat1, dmat2, mut_ix, pdb1, pdb2
 
 
 def batch_generator(loader, prepare, batch_size=MAX_BATCH_SIZE):
@@ -223,37 +228,60 @@ def load_residues(pdb1, chain_id1):
     return [residues[i] for i in set(idx)]
 
 
-def load_or_parse_residues(pdb1, chain_id1, repo_path=REPO_PATH):
+def load_or_parse_residues(pdb1, chain_id1, repo_path=REPO_PATH,
+                           allowed_solving_methods=['SOLUTION NMR', 'X-RAY DIFFRACTION']):
     if tostr(pdb1, chain_id1) in COORDS:
         residues = load_residues(pdb1, chain_id1)
         return residues
     src_path = os.path.join(repo_path, '%s.pdb.gz' % pdb1)
     if not os.path.exists(src_path):
         fetchPDB(pdb1, folder=os.path.dirname(src_path))
+    if not os.path.exists(src_path):
+        return None
     st1, h1 = parsePDB(src_path, header=True, chain=chain_id1)
     if (st1 is None) or (h1 is None):
         return None
-    # if (h1['experiment'] != 'SOLUTION NMR') or (h1['experiment'] != 'X-RAY DIFFRACTION'):
-    #     return None
+    if h1['experiment'] not in allowed_solving_methods:
+        return None
     residues = store_residues(st1, pdb1, chain_id1)
     return residues
 
 
+def load_or_parse_residue_pair(pdb_id1, pdb_id2):
+    try:
+        pdb1, chain_id1 = pdb_id1[:4], pdb_id1[4:]
+        residues1 = load_or_parse_residues(pdb1, chain_id1)
+        pdb2, chain_id2 = pdb_id2[:4], pdb_id2[4:]
+        residues2 = load_or_parse_residues(pdb2, chain_id2)
+        assert (residues1 is not None) and (residues2 is not None)
+    except (AssertionError, OSError) as e:
+        return None
+    return residues1, residues2
+
+
 def find_maximal_matching_shift(seq1, seq2, k=1, max_shift=MAX_ALLOWED_SHIFT):
+    def binary_array(sq1, sq2):
+        return [int(c1 != c2) for c1, c2 in zip(sq1, sq2)]
+
+    def indices(bin_arr):
+        return [i for i, c in enumerate(bin_arr) if c == 1]
+
     size = min(len(seq1), len(seq2))
     min_size = size - max_shift
     a, b = 0, 0
     str1 = seq1[a: a + size]
     str2 = seq2[b: b + size]
-    diff = np.where(str1 != str2)[0]
-    while (size > min_size) and (len(diff) != k):
+    bin_array = binary_array(str1, str2)
+    while (size > min_size) and (sum(bin_array) != k):
         for a in range(0, len(seq1) - size):
+            str1 = seq1[a: a + size]
             for b in range(0, len(seq2) - size):
-                str1 = seq1[a: a + size]
                 str2 = seq2[b: b + size]
-                diff = np.where(str1 != str2)[0]
+                bin_array = binary_array(str1, str2)
+                if sum(bin_array) == k:
+                    return a, b, size, indices(bin_array)
         size -= 1
-    return a, b, size, diff
+    return a, b, size, indices(bin_array)
 
 
 def handle_failure(pdb1, reason, failed_list=FAILED_PDBs_LIST, failed_pdbs=FAILED_PDBs_SET):
@@ -292,31 +320,6 @@ def pairwise_distances(x, y=None):
     return dist
 
 
-# def pairwise_distances_cpu(x, y=None):
-#     '''
-#     Input: x is a Nxd matrix
-#            y is an optional Mxd matirx
-#     Output: dist is a NxM matrix where dist[i,j] is the square norm between x[i,:] and y[j,:]
-#             if y is not given then use 'y=x'.
-#     i.e. dist[i,j] = ||x[i,:]-y[j,:]||^2
-#     '''
-#     x_norm = np.sum(x ** 2, axis=1).ravel()
-#     if y is not None:
-#         y_t = y.T
-#         y_norm = np.sum(y ** 2, axis=1).ravel()
-#     else:
-#         y_t = x.T
-#         y_norm = x_norm.ravel()
-#
-#     dist = x_norm + y_norm - 2.0 * np.dot(x, y_t)
-#
-#     # Ensure diagonal is zero if x=y
-#     if y is None:
-#         dist = dist - np.diag(np.diag(dist))
-#     dist = np.clip(dist, 0.0, np.inf)
-#     return dist
-
-
 def to_seq(residues):
     return ''.join([to_one_letter(res.getResname()) for res in residues])
 
@@ -325,6 +328,18 @@ def align(str1, str2):
     match = SequenceMatcher(None, str1, str2)
     m = match.find_longest_match(0, len(str1), 0, len(str2))
     return m
+
+
+def align_helper(sequence, profile, residues, cmat=None):
+    seqres = to_seq(residues)
+    m = align(seqres, sequence)
+    L = m.size
+    seq = sequence[m.b:m.b + L]
+    residues = residues[m.a:m.a + L]
+    if cmat is not None:
+        cmat = cmat[m.b:m.b + L, m.b:m.b + L]
+    prof = profile[m.b:m.b + L, :]
+    return seq, residues, cmat, prof
 
 
 def is_okay(res):
@@ -341,19 +356,17 @@ def load_residues_and_profile_and_ccm(pdb1, chain_id1, sequence_dict=SEQs, load_
         prof1 = get_profile(pdb_id1)    # throws FileNotFoundError
     except FileNotFoundError:
         raise FileNotFoundError('could not find profile for: \'%s\'' % pdb_id1)
-    if load_ccm:
-        try:
-            ccm1 = get_ccmpred(tostr(pdb1, chain_id1), to_tensor=True)
-        except AssertionError:
-            raise MemoryError('Assert failed- not enough memory on GPU!')
     m = align(to_seq(residues1), sequence_dict[pdb_id1].seq)
     residues1, prof1 = residues1[m.a: m.a + m.size], prof1[m.b: m.b + m.size, :]
+    assert len(residues1) == len(prof1)
     if m.size <= 1:
         raise IOError('could not match seq to profile for: \'%s\'' % pdb_id1)
     if load_ccm:
+        try:
+            ccm1 = get_ccmpred(tostr(pdb1, chain_id1), compute=True, to_tensor=True)
+        except AssertionError:
+            raise MemoryError('Assert failed- not enough memory on GPU!')
         ccm1 = ccm1[m.b:m.b + m.size, m.b:m.b + m.size]
-    assert len(residues1) == len(prof1)
-    if load_ccm:
         return residues1, prof1, ccm1
     return residues1, prof1
 
@@ -369,3 +382,31 @@ def load_residues_profile_stride(pdb1, chain_id1):
     assert len(dssp1) == len(residues1)
     assert len(prof1) == len(residues1)
     return residues1, prof1, torch.tensor(dssp1, dtype=torch.long, device=device)
+
+
+def filter_pair_dataset(dataset_pairs, threshold):
+
+    def subsample(arr, n=2):
+        return arr[0:len(arr):n]
+
+    def compute_correlation(d1, d2):
+        a1, a2 = subsample(d1.ravel()), subsample(d2.ravel())
+        return pearsonr(a1, a2)
+
+    pair_id_to_list_of_pairs = defaultdict(list)
+    for rec in tqdm(dataset_pairs, desc="pairs processed"):
+        pair_id_to_list_of_pairs[rec[b'pair_id']].append(rec)
+
+    dataset_filtered = []
+    for pair_id, records in tqdm(pair_id_to_list_of_pairs.items(), desc="unique seq-pairs filtered"):
+        deltas = [rec[b'dmat1'] - rec[b'dmat2'] for rec in records]
+        if len(deltas) == 1:
+            dataset_filtered.extend(records)
+            continue
+        cors = [compute_correlation(p1, p2) for (p1, p2) in combinations(deltas, 2)]
+        avg_pearsonr = np.mean(cors)
+        if avg_pearsonr < threshold:
+            continue
+        dataset_filtered.extend(records)
+
+    return dataset_filtered
